@@ -314,7 +314,7 @@ export default function App() {
       {currentUser && (
         <nav className="navbar">
           <div className="nav-brand">
-            <div className="nav-brand-icon">📜</div>
+            <img src="/uncle_jim_portrait.png" alt="Uncle Jim" className="nav-brand-avatar" />
             <span>Uncle Jim's Estate</span>
           </div>
 
@@ -381,16 +381,18 @@ export default function App() {
       )}
 
       <main className="main-content">
-        {/* VIEW 0: LOGIN */}
+        {/* VIEW 0: LOGIN / SPLASH SCREEN */}
         {currentView === 'login' && (
-          <div style={{ maxWidth: '520px', margin: '3rem auto', textAlign: 'center' }}>
-            <div className="card">
-              <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>📜</div>
-              <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.8rem', color: 'var(--accent-gold)' }}>
+          <div style={{ maxWidth: '520px', margin: '2rem auto', textAlign: 'center' }}>
+            <div className="card" style={{ padding: '2rem 1.5rem' }}>
+              <div className="splash-portrait-wrapper">
+                <img src="/uncle_jim_portrait.png" alt="Uncle Jim" className="splash-portrait-img" />
+              </div>
+              <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '2.1rem', color: 'var(--accent-gold)', marginBottom: '0.2rem' }}>
                 Uncle Jim's Estate
               </h1>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-                Private Family Estate Documentation, Review, & Preservation Portal
+              <p style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: '0.95rem', marginBottom: '1.5rem' }}>
+                "Preserving possessions, photographs, and memories for the family."
               </p>
 
               <div style={{ textAlign: 'left', background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem' }}>
