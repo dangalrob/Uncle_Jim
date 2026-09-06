@@ -1,0 +1,884 @@
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
+import multer from 'multer';
+import sharp from 'sharp';
+import sqlite3 from 'sqlite3';
+import path from 'path';
+import fs from 'fs';
+import nodemailer from 'nodemailer';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const JWT_SECRET = process.env.JWT_SECRET || 'uncle_jims_estate_secret_key_2026';
+const PORT = process.env.PORT || 3001;
+
+// Ensure storage directories exist
+const DATA_DIR = path.join(__dirname, 'data');
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const FULL_UPLOADS_DIR = path.join(UPLOADS_DIR, 'full');
+const THUMB_UPLOADS_DIR = path.join(UPLOADS_DIR, 'thumbs');
+
+[DATA_DIR, UPLOADS_DIR, FULL_UPLOADS_DIR, THUMB_UPLOADS_DIR].forEach(dir => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
+// Initialize SQLite Database
+const dbPath = path.join(DATA_DIR, 'estate.db');
+const db = new sqlite3.Database(dbPath);
+
+// Helper for promise-based DB queries
+const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
+  db.run(sql, params, function(err) {
+    if (err) reject(err);
+    else resolve(this);
+  });
+});
+
+const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
+  db.get(sql, params, (err, row) => {
+    if (err) reject(err);
+    else resolve(row);
+  });
+});
+
+const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
+  db.all(sql, params, (err, rows) => {
+    if (err) reject(err);
+    else resolve(rows);
+  });
+});
+
+// Initialize Schema and Seed Data
+async function initDatabase() {
+  db.serialize(async () => {
+    db.run(`CREATE TABLE IF NOT EXISTS estates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      description TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      estate_id TEXT,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'reviewer',
+      phone TEXT,
+      address TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS categories (
+      id TEXT PRIMARY KEY,
+      estate_id TEXT,
+      name TEXT NOT NULL,
+      icon TEXT
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS items (
+      id TEXT PRIMARY KEY,
+      estate_id TEXT,
+      parent_id TEXT,
+      item_number TEXT,
+      title TEXT NOT NULL,
+      category_id TEXT,
+      location_in_house TEXT,
+      condition TEXT,
+      dimensions TEXT,
+      weight TEXT,
+      special_handling_notes TEXT,
+      description TEXT,
+      status TEXT DEFAULT 'draft',
+      is_high_value INTEGER DEFAULT 0,
+      release_batch_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS item_photos (
+      id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      photo_url TEXT NOT NULL,
+      thumbnail_url TEXT NOT NULL,
+      is_primary INTEGER DEFAULT 0,
+      display_order INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS item_stories (
+      id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      story_text TEXT NOT NULL,
+      provenance_source TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS interests (
+      id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      recorded_by_user_id TEXT,
+      interest_level TEXT DEFAULT 'interested',
+      comment TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(item_id, user_id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS assignments (
+      id TEXT PRIMARY KEY,
+      item_id TEXT UNIQUE NOT NULL,
+      recipient_user_id TEXT,
+      destination_type TEXT DEFAULT 'family',
+      destination_name TEXT,
+      is_locked INTEGER DEFAULT 1,
+      assigned_by_user_id TEXT,
+      assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS fulfillments (
+      id TEXT PRIMARY KEY,
+      item_id TEXT UNIQUE NOT NULL,
+      status TEXT DEFAULT 'not_ready',
+      carrier TEXT,
+      tracking_number TEXT,
+      recipient_address TEXT,
+      shipped_at DATETIME,
+      delivered_at DATETIME,
+      notes TEXT
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      estate_id TEXT,
+      user_id TEXT,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      details TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // Seed Estate
+    const estate = await dbGet(`SELECT * FROM estates WHERE id = 'estate_uncle_jim'`);
+    if (!estate) {
+      await dbRun(`INSERT INTO estates (id, name, display_name, description) VALUES (?, ?, ?, ?)`, [
+        'estate_uncle_jim',
+        'Uncle Jim Estate',
+        "Uncle Jim's Estate",
+        "Preserving possessions, photographs, and memories from Uncle Jim's home."
+      ]);
+    }
+
+    // Seed Categories
+    const catCount = await dbGet(`SELECT COUNT(*) as count FROM categories`);
+    if (catCount.count === 0) {
+      const cats = [
+        ['cat_1', 'estate_uncle_jim', 'Furniture', '🛋️'],
+        ['cat_2', 'estate_uncle_jim', 'Maritime Objects & Models', '⚓'],
+        ['cat_3', 'estate_uncle_jim', 'Books & Documents', '📚'],
+        ['cat_4', 'estate_uncle_jim', 'Artwork & Framed Prints', '🎨'],
+        ['cat_5', 'estate_uncle_jim', 'Memorabilia & Keepsakes', '💎'],
+        ['cat_6', 'estate_uncle_jim', 'Household & Kitchenware', '🍽️']
+      ];
+      for (const [id, eId, name, icon] of cats) {
+        await dbRun(`INSERT INTO categories (id, estate_id, name, icon) VALUES (?, ?, ?, ?)`, [id, eId, name, icon]);
+      }
+    }
+
+    // Seed Users
+    const userCount = await dbGet(`SELECT COUNT(*) as count FROM users`);
+    if (userCount.count === 0) {
+      const defaultPasswordHash = await bcrypt.hash('password123', 10);
+      const seedUsers = [
+        ['user_dan', 'estate_uncle_jim', 'Dan Robinson', 'dan@unclejim.estate', defaultPasswordHash, 'admin', '555-0100', 'Verona, NJ'],
+        ['user_frank', 'estate_uncle_jim', 'Frank Robinson (Executor)', 'frank@unclejim.estate', defaultPasswordHash, 'admin', '555-0101', 'Ithaca, NY'],
+        ['user_sarah', 'estate_uncle_jim', 'Cousin Sarah', 'sarah@unclejim.estate', defaultPasswordHash, 'contributor', '555-0102', 'Madison, WI'],
+        ['user_jean', 'estate_uncle_jim', 'Aunt Jean', 'jean@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0103', 'Manitowish Waters, WI'],
+        ['user_tim', 'estate_uncle_jim', 'Tim Robinson', 'tim@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0104', 'Chicago, IL'],
+        ['user_susan', 'estate_uncle_jim', 'Susan Robinson', 'susan@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0105', 'Boston, MA']
+      ];
+      for (const [id, eId, name, email, pass, role, phone, addr] of seedUsers) {
+        await dbRun(`INSERT INTO users (id, estate_id, name, email, password_hash, role, phone, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
+          id, eId, name, email, pass, role, phone, addr
+        ]);
+      }
+    }
+
+    // Seed Sample Items if empty
+    const itemCheck = await dbGet(`SELECT COUNT(*) as count FROM items`);
+    if (itemCheck.count === 0) {
+      console.log("Seeding sample items for Uncle Jim's Estate...");
+      const sampleItems = [
+        {
+          id: 'item_101',
+          title: 'Hand-Carved Wooden Ship Wheel',
+          category_id: 'cat_2',
+          location_in_house: 'Living Room (Over Mantel)',
+          condition: 'Excellent',
+          dimensions: '36" Diameter x 4" Depth',
+          weight: '18 lbs',
+          special_handling_notes: 'Wall mount requires two people to detach safely.',
+          description: 'Authentic 19th-century teak ship steering wheel with brass hub inlay.',
+          status: 'released',
+          is_high_value: 1,
+          story: 'Given to Uncle Jim by Captain Mac in 1974 after their sailing trip around Lake Superior. Jim kept this mounted above his fireplace for 50 years.'
+        },
+        {
+          id: 'item_102',
+          title: 'First Edition Maritime Navigation Logs (1942)',
+          category_id: 'cat_3',
+          location_in_house: 'Study Bookshelf (Top Shelf)',
+          condition: 'Good (Leather Spine Worn)',
+          dimensions: '9" x 12" x 2"',
+          weight: '4 lbs',
+          special_handling_notes: 'Fragile paper. Handle with clean hands or gloves.',
+          description: 'Hardcover leather-bound navigational logbooks detailing Great Lakes vessel traffic during WWII.',
+          status: 'released',
+          is_high_value: 0,
+          story: 'Uncle Jim spent winter evenings annotating these logs with notes about historic storms on Lake Michigan.'
+        },
+        {
+          id: 'item_103',
+          title: 'Solid Brass Sextant in Fitted Mahogany Box',
+          category_id: 'cat_2',
+          location_in_house: 'Study Desk Drawer',
+          condition: 'Mint / Calibrated',
+          dimensions: '10" x 10" x 6"',
+          weight: '8 lbs',
+          special_handling_notes: 'Includes original brass key for mahogany lock box.',
+          description: 'Vintage marine sextant with optical scope, filters, and polished brass index arm.',
+          status: 'released',
+          is_high_value: 1,
+          story: 'Used by Jim during his merchant marine voyages. He taught Tim and Dan how to sight stars with it on summer nights.'
+        },
+        {
+          id: 'item_104',
+          title: 'Manitowish Waters Lake Map Oil Painting',
+          category_id: 'cat_4',
+          location_in_house: 'Dining Room Wall',
+          condition: 'Very Good',
+          dimensions: '24" x 36"',
+          weight: '6 lbs',
+          special_handling_notes: 'Framed in custom reclaimed barnwood.',
+          description: 'Original canvas painting depicting the chain of lakes in Northern Wisconsin.',
+          status: 'released',
+          is_high_value: 0,
+          story: 'Commissioned by Aunt Jean for Jim’s 50th birthday. Depicts his favorite fishing bays marked with tiny anchors.'
+        }
+      ];
+
+      for (const item of sampleItems) {
+        await dbRun(`INSERT INTO items (id, estate_id, title, category_id, location_in_house, condition, dimensions, weight, special_handling_notes, description, status, is_high_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+          item.id, 'estate_uncle_jim', item.title, item.category_id, item.location_in_house, item.condition, item.dimensions, item.weight, item.special_handling_notes, item.description, item.status, item.is_high_value
+        ]);
+
+        await dbRun(`INSERT INTO item_stories (id, item_id, story_text, provenance_source) VALUES (?, ?, ?, ?)`, [
+          `story_${item.id}`, item.id, item.story, 'Uncle Jim\'s Personal Records'
+        ]);
+
+        // SVG placeholder photo
+        const placeholderSvg = `https://placehold.co/800x600/2b1810/ffffff?text=${encodeURIComponent(item.title)}`;
+        await dbRun(`INSERT INTO item_photos (id, item_id, photo_url, thumbnail_url, is_primary) VALUES (?, ?, ?, ?, 1)`, [
+          `photo_${item.id}`, item.id, placeholderSvg, placeholderSvg
+        ]);
+      }
+
+      // Seed sample interest for demo
+      await dbRun(`INSERT INTO interests (id, item_id, user_id, interest_level, comment) VALUES (?, ?, ?, ?, ?)`, [
+        'int_101', 'item_101', 'user_jean', 'interested', 'Uncle Jim always promised this to me for the cabin living room.'
+      ]);
+      await dbRun(`INSERT INTO interests (id, item_id, user_id, interest_level, comment) VALUES (?, ?, ?, ?, ?)`, [
+        'int_102', 'item_101', 'user_tim', 'interested', 'I loved hearing Captain Mac stories sitting under this wheel.'
+      ]);
+    }
+  });
+}
+
+initDatabase().catch(console.error);
+
+// Multer Storage Configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, FULL_UPLOADS_DIR),
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'photo-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+const upload = multer({ storage });
+
+const app = express();
+app.use(cors());
+app.use(cookieParser());
+app.use(express.json());
+
+// Serve static uploads
+app.use('/uploads', express.static(UPLOADS_DIR));
+app.use(express.static(path.join(__dirname, 'dist')));
+
+// Authentication Middleware
+const authenticateToken = async (req, res, next) => {
+  const token = req.cookies.uj_token || req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: "Authentication required" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await dbGet(`SELECT id, estate_id, name, email, role FROM users WHERE id = ?`, [decoded.id]);
+    if (!user) return res.status(401).json({ error: "Invalid user session" });
+    req.user = user;
+    next();
+  } catch (err) {
+    return res.status(403).json({ error: "Session expired" });
+  }
+};
+
+const requireRole = (roles) => (req, res, next) => {
+  if (!roles.includes(req.user.role)) {
+    return res.status(403).json({ error: "Access denied. Insufficient permissions." });
+  }
+  next();
+};
+
+// Audit Log Helper
+async function logAudit(estateId, userId, action, targetType, targetId, details) {
+  try {
+    await dbRun(
+      `INSERT INTO audit_logs (id, estate_id, user_id, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ['audit_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4), estateId, userId, action, targetType, targetId, JSON.stringify(details || {})]
+    );
+  } catch (err) {
+    console.error("Audit log error:", err.message);
+  }
+}
+
+// NodeMailer Helper
+async function sendNotificationEmail(to, subject, bodyText) {
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+    console.log(`[EMAIL LOG - DEMO MODE] To: ${to} | Subject: ${subject}\n${bodyText}`);
+    return;
+  }
+  try {
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD
+      }
+    });
+    await transporter.sendMail({
+      from: `"Uncle Jim's Estate" <${process.env.GMAIL_USER}>`,
+      to,
+      subject,
+      text: bodyText
+    });
+    console.log(`Email dispatched successfully to ${to}`);
+  } catch (err) {
+    console.error("Failed to send email notification:", err.message);
+  }
+}
+
+// ----------------------------------------------------
+// AUTHENTICATION ENDPOINTS
+// ----------------------------------------------------
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: "Email and password required" });
+
+  try {
+    const user = await dbGet(`SELECT * FROM users WHERE email = ?`, [email.toLowerCase().trim()]);
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const isValid = await bcrypt.compare(password, user.password_hash);
+    if (!isValid) return res.status(401).json({ error: "Invalid credentials" });
+
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+    res.cookie('uj_token', token, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
+
+    logAudit(user.estate_id, user.id, 'USER_LOGIN', 'users', user.id, { email: user.email });
+
+    res.json({
+      user: { id: user.id, name: user.name, email: user.email, role: user.role, phone: user.phone, address: user.address },
+      token
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error during login" });
+  }
+});
+
+app.get('/api/auth/me', authenticateToken, (req, res) => {
+  res.json({ user: req.user });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('uj_token');
+  res.json({ success: true });
+});
+
+// ----------------------------------------------------
+// RAPID MOBILE PHOTO CAPTURE & ITEM CREATION
+// ----------------------------------------------------
+app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'contributor']), upload.array('photos', 10), async (req, res) => {
+  try {
+    const { title, locationInHouse, categoryId } = req.body;
+    const itemId = 'item_' + Date.now();
+    const itemNumber = 'UJ-' + Math.floor(100 + Math.random() * 900);
+    const itemTitle = title?.trim() || `Inventory Item #${itemNumber}`;
+
+    await dbRun(
+      `INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, status) VALUES (?, ?, ?, ?, ?, ?, 'draft')`,
+      [itemId, req.user.estate_id, itemNumber, itemTitle, categoryId || null, locationInHouse || 'House Capture']
+    );
+
+    const savedPhotos = [];
+    if (req.files && req.files.length > 0) {
+      for (let i = 0; i < req.files.length; i++) {
+        const file = req.files[i];
+        const thumbFilename = 'thumb-' + file.filename.replace(/\.[^/.]+$/, "") + '.webp';
+        const thumbPath = path.join(THUMB_UPLOADS_DIR, thumbFilename);
+
+        // Generate high quality webp thumbnail
+        await sharp(file.path)
+          .resize(400, 300, { fit: 'cover' })
+          .toFormat('webp', { quality: 80 })
+          .toFile(thumbPath);
+
+        const photoUrl = `/uploads/full/${file.filename}`;
+        const thumbnailUrl = `/uploads/thumbs/${thumbFilename}`;
+        const photoId = 'photo_' + Date.now() + '_' + i;
+        const isPrimary = i === 0 ? 1 : 0;
+
+        await dbRun(
+          `INSERT INTO item_photos (id, item_id, photo_url, thumbnail_url, is_primary, display_order) VALUES (?, ?, ?, ?, ?, ?)`,
+          [photoId, itemId, photoUrl, thumbnailUrl, isPrimary, i]
+        );
+
+        savedPhotos.push({ id: photoId, photoUrl, thumbnailUrl, isPrimary });
+      }
+    }
+
+    logAudit(req.user.estate_id, req.user.id, 'RAPID_CAPTURE_ITEM', 'items', itemId, { title: itemTitle, photosCount: savedPhotos.length });
+
+    res.json({
+      success: true,
+      item: { id: itemId, itemNumber, title: itemTitle, status: 'draft', photos: savedPhotos }
+    });
+  } catch (err) {
+    console.error("Rapid capture error:", err);
+    res.status(500).json({ error: "Failed to process rapid capture upload" });
+  }
+});
+
+// ----------------------------------------------------
+// ITEM INVENTORY & ENRICHMENT ENDPOINTS
+// ----------------------------------------------------
+app.get('/api/items', authenticateToken, async (req, res) => {
+  try {
+    const { status, category, search } = req.query;
+    let query = `
+      SELECT i.*, c.name as category_name, c.icon as category_icon,
+             (SELECT photo_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_photo,
+             (SELECT thumbnail_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_thumb,
+             (SELECT COUNT(*) FROM interests WHERE item_id = i.id AND interest_level = 'interested') as interested_count,
+             (SELECT recipient_user_id FROM assignments WHERE item_id = i.id) as assigned_to_user_id,
+             (SELECT u.name FROM assignments a JOIN users u ON a.recipient_user_id = u.id WHERE a.item_id = i.id) as assigned_to_name,
+             (SELECT destination_name FROM assignments WHERE item_id = i.id) as destination_name
+      FROM items i
+      LEFT JOIN categories c ON i.category_id = c.id
+      WHERE i.estate_id = ?
+    `;
+    const params = [req.user.estate_id];
+
+    // Family reviewers can only see released or assigned items
+    if (req.user.role === 'reviewer') {
+      query += ` AND i.status IN ('released', 'assigned', 'distributed', 'completed')`;
+    } else if (status) {
+      query += ` AND i.status = ?`;
+      params.push(status);
+    }
+
+    if (category) {
+      query += ` AND i.category_id = ?`;
+      params.push(category);
+    }
+
+    if (search) {
+      query += ` AND (i.title LIKE ? OR i.description LIKE ? OR i.location_in_house LIKE ?)`;
+      const s = `%${search}%`;
+      params.push(s, s, s);
+    }
+
+    query += ` ORDER BY i.created_at DESC`;
+    const items = await dbAll(query, params);
+    res.json(items);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load inventory items" });
+  }
+});
+
+app.get('/api/items/:id', authenticateToken, async (req, res) => {
+  try {
+    const item = await dbGet(`
+      SELECT i.*, c.name as category_name, c.icon as category_icon
+      FROM items i
+      LEFT JOIN categories c ON i.category_id = c.id
+      WHERE i.id = ? AND i.estate_id = ?
+    `, [req.params.id, req.user.estate_id]);
+
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const photos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [item.id]);
+    const stories = await dbAll(`SELECT * FROM item_stories WHERE item_id = ? ORDER BY created_at ASC`, [item.id]);
+    const interests = await dbAll(`
+      SELECT int.*, u.name as user_name, u.email as user_email, rec.name as recorded_by_name
+      FROM interests int
+      JOIN users u ON int.user_id = u.id
+      LEFT JOIN users rec ON int.recorded_by_user_id = rec.id
+      WHERE int.item_id = ?
+    `, [item.id]);
+
+    const assignment = await dbGet(`
+      SELECT a.*, u.name as recipient_name
+      FROM assignments a
+      LEFT JOIN users u ON a.recipient_user_id = u.id
+      WHERE a.item_id = ?
+    `, [item.id]);
+
+    const fulfillment = await dbGet(`SELECT * FROM fulfillments WHERE item_id = ?`, [item.id]);
+
+    res.json({ ...item, photos, stories, interests, assignment, fulfillment });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load item details" });
+  }
+});
+
+app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor']), async (req, res) => {
+  try {
+    const { title, categoryId, locationInHouse, condition, dimensions, weight, specialHandlingNotes, description, storyText, provenanceSource, isHighValue } = req.body;
+    const itemId = req.params.id;
+
+    await dbRun(`
+      UPDATE items
+      SET title = COALESCE(?, title),
+          category_id = ?,
+          location_in_house = ?,
+          condition = ?,
+          dimensions = ?,
+          weight = ?,
+          special_handling_notes = ?,
+          description = ?,
+          is_high_value = COALESCE(?, is_high_value)
+      WHERE id = ? AND estate_id = ?
+    `, [title, categoryId || null, locationInHouse || null, condition || null, dimensions || null, weight || null, specialHandlingNotes || null, description || null, isHighValue ? 1 : 0, itemId, req.user.estate_id]);
+
+    if (storyText) {
+      const existingStory = await dbGet(`SELECT id FROM item_stories WHERE item_id = ?`, [itemId]);
+      if (existingStory) {
+        await dbRun(`UPDATE item_stories SET story_text = ?, provenance_source = ? WHERE id = ?`, [storyText, provenanceSource || null, existingStory.id]);
+      } else {
+        await dbRun(`INSERT INTO item_stories (id, item_id, story_text, provenance_source) VALUES (?, ?, ?, ?)`, ['story_' + Date.now(), itemId, storyText, provenanceSource || null]);
+      }
+    }
+
+    logAudit(req.user.estate_id, req.user.id, 'UPDATE_ITEM', 'items', itemId, { title });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update item" });
+  }
+});
+
+app.delete('/api/items/:id', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    await dbRun(`DELETE FROM item_photos WHERE item_id = ?`, [itemId]);
+    await dbRun(`DELETE FROM item_stories WHERE item_id = ?`, [itemId]);
+    await dbRun(`DELETE FROM interests WHERE item_id = ?`, [itemId]);
+    await dbRun(`DELETE FROM assignments WHERE item_id = ?`, [itemId]);
+    await dbRun(`DELETE FROM fulfillments WHERE item_id = ?`, [itemId]);
+    await dbRun(`DELETE FROM items WHERE id = ? AND estate_id = ?`, [itemId, req.user.estate_id]);
+
+    logAudit(req.user.estate_id, req.user.id, 'DELETE_ITEM', 'items', itemId, {});
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete item" });
+  }
+});
+
+// ----------------------------------------------------
+// BATCH RELEASE ENDPOINTS
+// ----------------------------------------------------
+app.post('/api/batches/release', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { itemIds } = req.body;
+    if (!itemIds || !Array.isArray(itemIds) || itemIds.length === 0) {
+      return res.status(400).json({ error: "itemIds array required" });
+    }
+
+    const batchId = 'batch_' + Date.now();
+    for (const itemId of itemIds) {
+      await dbRun(`UPDATE items SET status = 'released', release_batch_id = ? WHERE id = ? AND estate_id = ?`, [batchId, itemId, req.user.estate_id]);
+    }
+
+    // Notify family members via email
+    const familyUsers = await dbAll(`SELECT email FROM users WHERE estate_id = ? AND role = 'reviewer'`, [req.user.estate_id]);
+    const emails = familyUsers.map(u => u.email).join(', ');
+    if (emails) {
+      sendNotificationEmail(
+        emails,
+        `Uncle Jim's Estate — ${itemIds.length} New Items Released for Review`,
+        `Hello Family,\n\n${itemIds.length} new items from Uncle Jim's estate have been released for family review!\n\nPlease log in to review photos, stories, and indicate what matters to you:\nhttp://localhost:3000/\n\nWarm regards,\nDan & Frank`
+      );
+    }
+
+    logAudit(req.user.estate_id, req.user.id, 'RELEASE_BATCH', 'release_batches', batchId, { count: itemIds.length });
+
+    res.json({ success: true, releasedCount: itemIds.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to release batch" });
+  }
+});
+
+// ----------------------------------------------------
+// FAMILY REVIEW & INTEREST ENDPOINTS
+// ----------------------------------------------------
+app.get('/api/reviews/progress', authenticateToken, async (req, res) => {
+  try {
+    const totalReleased = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ? AND status IN ('released', 'assigned', 'distributed', 'completed')`, [req.user.estate_id]);
+    const reviewedByUser = await dbGet(`SELECT COUNT(DISTINCT item_id) as count FROM interests WHERE user_id = ?`, [req.user.id]);
+    
+    const userProgress = await dbAll(`
+      SELECT u.id, u.name, u.email,
+             COUNT(DISTINCT int.item_id) as items_reviewed
+      FROM users u
+      LEFT JOIN interests int ON u.id = int.user_id
+      WHERE u.estate_id = ? AND u.role = 'reviewer'
+      GROUP BY u.id
+    `, [req.user.estate_id]);
+
+    res.json({
+      totalReleased: totalReleased.count,
+      reviewedByUser: reviewedByUser.count,
+      userProgress
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load review progress" });
+  }
+});
+
+app.post('/api/items/:id/interest', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const { interestLevel, comment } = req.body; // 'interested' or 'not_interested'
+
+    const assignment = await dbGet(`SELECT is_locked FROM assignments WHERE item_id = ?`, [itemId]);
+    if (assignment && assignment.is_locked && req.user.role !== 'admin') {
+      return res.status(403).json({ error: "This item has been locked by assignment." });
+    }
+
+    const existing = await dbGet(`SELECT id FROM interests WHERE item_id = ? AND user_id = ?`, [itemId, req.user.id]);
+    if (existing) {
+      await dbRun(`UPDATE interests SET interest_level = ?, comment = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?`, [interestLevel, comment || null, existing.id]);
+    } else {
+      await dbRun(`INSERT INTO interests (id, item_id, user_id, interest_level, comment) VALUES (?, ?, ?, ?, ?)`, ['int_' + Date.now(), itemId, req.user.id, interestLevel, comment || null]);
+    }
+
+    logAudit(req.user.estate_id, req.user.id, 'SUBMIT_INTEREST', 'items', itemId, { interestLevel, comment });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to record interest" });
+  }
+});
+
+app.post('/api/items/:id/interest-on-behalf', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const { targetUserId, interestLevel, comment } = req.body;
+    if (!targetUserId) return res.status(400).json({ error: "targetUserId required" });
+
+    const existing = await dbGet(`SELECT id FROM interests WHERE item_id = ? AND user_id = ?`, [itemId, targetUserId]);
+    if (existing) {
+      await dbRun(`UPDATE interests SET interest_level = ?, comment = ?, recorded_by_user_id = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?`, [interestLevel, comment || null, req.user.id, existing.id]);
+    } else {
+      await dbRun(`INSERT INTO interests (id, item_id, user_id, recorded_by_user_id, interest_level, comment) VALUES (?, ?, ?, ?, ?, ?)`, ['int_' + Date.now(), itemId, targetUserId, req.user.id, interestLevel, comment || null]);
+    }
+
+    logAudit(req.user.estate_id, req.user.id, 'RECORD_INTEREST_BEHALF', 'items', itemId, { targetUserId, interestLevel });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to record interest on behalf" });
+  }
+});
+
+// ----------------------------------------------------
+// ASSIGNMENT & CONFLICT RESOLUTION ENDPOINTS
+// ----------------------------------------------------
+app.post('/api/items/:id/assign', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const { recipientUserId, destinationType, destinationName } = req.body;
+
+    const existing = await dbGet(`SELECT id FROM assignments WHERE item_id = ?`, [itemId]);
+    if (existing) {
+      await dbRun(`UPDATE assignments SET recipient_user_id = ?, destination_type = ?, destination_name = ?, is_locked = 1, assigned_by_user_id = ?, assigned_at = CURRENT_TIMESTAMP WHERE id = ?`, [
+        recipientUserId || null, destinationType || 'family', destinationName || null, req.user.id, existing.id
+      ]);
+    } else {
+      await dbRun(`INSERT INTO assignments (id, item_id, recipient_user_id, destination_type, destination_name, is_locked, assigned_by_user_id) VALUES (?, ?, ?, ?, ?, 1, ?)`, [
+        'assign_' + Date.now(), itemId, recipientUserId || null, destinationType || 'family', destinationName || null, req.user.id
+      ]);
+    }
+
+    await dbRun(`UPDATE items SET status = 'assigned' WHERE id = ? AND estate_id = ?`, [itemId, req.user.estate_id]);
+
+    // Send confirmation email to recipient if family member
+    if (recipientUserId) {
+      const recipient = await dbGet(`SELECT email, name FROM users WHERE id = ?`, [recipientUserId]);
+      if (recipient) {
+        const item = await dbGet(`SELECT title FROM items WHERE id = ?`, [itemId]);
+        sendNotificationEmail(
+          recipient.email,
+          `An item from Uncle Jim's estate has been assigned to you`,
+          `Dear ${recipient.name},\n\nThe item "${item.title}" from Uncle Jim's estate has been assigned to you!\n\nYou can log in to view shipping and pickup details:\nhttp://localhost:3000/\n\nWarmly,\nDan & Frank`
+        );
+      }
+    }
+
+    logAudit(req.user.estate_id, req.user.id, 'ASSIGN_ITEM', 'items', itemId, { recipientUserId, destinationType, destinationName });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to assign item" });
+  }
+});
+
+app.post('/api/items/:id/unlock', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    await dbRun(`UPDATE assignments SET is_locked = 0 WHERE item_id = ?`, [itemId]);
+    logAudit(req.user.estate_id, req.user.id, 'UNLOCK_ASSIGNMENT', 'items', itemId, {});
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to unlock assignment" });
+  }
+});
+
+// ----------------------------------------------------
+// FULFILLMENT & SHIPPING TRACKING
+// ----------------------------------------------------
+app.put('/api/items/:id/fulfillment', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const { status, carrier, trackingNumber, recipientAddress, notes } = req.body;
+
+    const existing = await dbGet(`SELECT id FROM fulfillments WHERE item_id = ?`, [itemId]);
+    if (existing) {
+      await dbRun(`UPDATE fulfillments SET status = ?, carrier = ?, tracking_number = ?, recipient_address = ?, notes = ? WHERE id = ?`, [
+        status || 'not_ready', carrier || null, trackingNumber || null, recipientAddress || null, notes || null, existing.id
+      ]);
+    } else {
+      await dbRun(`INSERT INTO fulfillments (id, item_id, status, carrier, tracking_number, recipient_address, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+        'ful_' + Date.now(), itemId, status || 'not_ready', carrier || null, trackingNumber || null, recipientAddress || null, notes || null
+      ]);
+    }
+
+    if (status === 'delivered' || status === 'completed') {
+      await dbRun(`UPDATE items SET status = 'completed' WHERE id = ?`, [itemId]);
+    }
+
+    logAudit(req.user.estate_id, req.user.id, 'UPDATE_FULFILLMENT', 'items', itemId, { status, carrier, trackingNumber });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update fulfillment status" });
+  }
+});
+
+// ----------------------------------------------------
+// ADMIN DASHBOARD ANALYTICS ENDPOINT
+// ----------------------------------------------------
+app.get('/api/admin/dashboard-stats', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const eId = req.user.estate_id;
+    const totalItems = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ?`, [eId]);
+    const draftItems = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ? AND status = 'draft'`, [eId]);
+    const releasedItems = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ? AND status = 'released'`, [eId]);
+    const assignedItems = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ? AND status = 'assigned'`, [eId]);
+    const completedItems = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ? AND status = 'completed'`, [eId]);
+
+    // Items with multiple interested users ("Needs Decision")
+    const needsDecision = await dbAll(`
+      SELECT i.id, i.title, i.item_number, COUNT(int.id) as interest_count
+      FROM items i
+      JOIN interests int ON i.id = int.item_id AND int.interest_level = 'interested'
+      LEFT JOIN assignments a ON i.id = a.item_id
+      WHERE i.estate_id = ? AND (a.id IS NULL OR a.is_locked = 0)
+      GROUP BY i.id
+      HAVING interest_count > 1
+    `, [eId]);
+
+    const categories = await dbAll(`SELECT * FROM categories WHERE estate_id = ?`, [eId]);
+    const users = await dbAll(`SELECT id, name, email, role FROM users WHERE estate_id = ?`, [eId]);
+    const recentAudit = await dbAll(`
+      SELECT a.*, u.name as user_name
+      FROM audit_logs a
+      LEFT JOIN users u ON a.user_id = u.id
+      WHERE a.estate_id = ?
+      ORDER BY a.created_at DESC LIMIT 15
+    `, [eId]);
+
+    res.json({
+      totalItems: totalItems.count,
+      draftItems: draftItems.count,
+      releasedItems: releasedItems.count,
+      assignedItems: assignedItems.count,
+      completedItems: completedItems.count,
+      needsDecision,
+      categories,
+      users,
+      recentAudit
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load dashboard stats" });
+  }
+});
+
+app.get('/api/categories', authenticateToken, async (req, res) => {
+  const cats = await dbAll(`SELECT * FROM categories WHERE estate_id = ? ORDER BY name ASC`, [req.user.estate_id]);
+  res.json(cats);
+});
+
+app.get('/api/users', authenticateToken, async (req, res) => {
+  const users = await dbAll(`SELECT id, name, email, role, phone, address FROM users WHERE estate_id = ? ORDER BY name ASC`, [req.user.estate_id]);
+  res.json(users);
+});
+
+// Fallback to index.html for SPA routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+app.listen(PORT, () => {
+  console.log(`Uncle Jim's Estate server running on http://localhost:${PORT}`);
+});
