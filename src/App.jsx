@@ -264,6 +264,8 @@ export default function App() {
       }));
       setCapturedPhotos(prev => [...prev, ...newPhotos]);
       setCaptureStep('enter_details');
+    } else {
+      alert("Your phone's camera did not return the photo to the browser. This is a known Safari bug. Please try taking the photo again, or choose it from your Photo Library.");
     }
     // Crucial fix: Reset the input value so subsequent camera captures 
     // (which often have the same filename like "image.jpg") will trigger onChange again.
@@ -839,8 +841,8 @@ export default function App() {
           {currentView === 'capture' && (
             <div className="mobile-frame">
               {/* Hidden File Inputs for Camera and Photo Library */}
-              <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" onChange={handlePhotosSelected} style={{ display: 'none' }} />
-              <input type="file" ref={libraryInputRef} accept="image/*" multiple onChange={handlePhotosSelected} style={{ display: 'none' }} />
+              <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" onChange={handlePhotosSelected} style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0,0,0,0)', border: 0 }} />
+              <input type="file" ref={libraryInputRef} accept="image/*" multiple onChange={handlePhotosSelected} style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0,0,0,0)', border: 0 }} />
 
               {/* STEPPER PROGRESS BAR */}
               <div style={{ display: 'flex', background: '#1c3628', borderBottom: '1px solid rgba(255,255,255,0.1)', padding: '0.5rem 1rem', gap: '0.5rem' }}>
