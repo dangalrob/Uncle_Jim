@@ -840,10 +840,6 @@ export default function App() {
           {/* MOBILE ITEM CAPTURE FLOW */}
           {currentView === 'capture' && (
             <div className="mobile-frame">
-              {/* Hidden File Inputs for Camera and Photo Library */}
-              <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" onChange={handlePhotosSelected} style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0,0,0,0)', border: 0 }} />
-              <input type="file" ref={libraryInputRef} accept="image/*" multiple onChange={handlePhotosSelected} style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0,0,0,0)', border: 0 }} />
-
               {/* STEPPER PROGRESS BAR */}
               <div style={{ display: 'flex', background: '#1c3628', borderBottom: '1px solid rgba(255,255,255,0.1)', padding: '0.5rem 1rem', gap: '0.5rem' }}>
                 <div style={{ flex: 1, textAlign: 'center', fontSize: '0.8rem', fontWeight: 'bold', padding: '0.4rem', borderRadius: '6px', background: ['take_photo', 'add_more'].includes(captureStep) ? 'var(--gold-accent)' : 'rgba(255,255,255,0.1)', color: ['take_photo', 'add_more'].includes(captureStep) ? '#1a3323' : '#b8ccbf' }}>
@@ -868,7 +864,8 @@ export default function App() {
                     <div style={{ width: '40px' }}></div>
                   </div>
 
-                  <div className="viewfinder-box" onClick={handleTriggerCamera} style={{ cursor: 'pointer', background: '#14241c', border: '2px dashed var(--gold-accent)', borderRadius: '16px', padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '220px', width: '100%' }}>
+                  <label className="viewfinder-box" style={{ cursor: 'pointer', background: '#14241c', border: '2px dashed var(--gold-accent)', borderRadius: '16px', padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '220px', width: '100%', margin: 0 }}>
+                    <input type="file" accept="image/*" capture="environment" onChange={handlePhotosSelected} style={{ display: 'none' }} />
                     {capturedPhotos[0]?.url ? (
                       <img src={capturedPhotos[0].url} style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '10px' }} alt="Captured Preview" />
                     ) : (
@@ -878,17 +875,22 @@ export default function App() {
                         <div style={{ fontSize: '0.82rem', color: '#b8ccbf', marginTop: '4px' }}>Optimized 2K HD Instant Capture</div>
                       </>
                     )}
-                  </div>
+                  </label>
 
                   {/* 2 Prominent Senior-Friendly Action Buttons */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', width: '100%', marginTop: '1.25rem' }}>
-                    <button className="btn-green-senior" style={{ width: '100%', minHeight: '56px', fontSize: '1rem' }} onClick={handleTriggerCamera}>
-                      <Camera size={22} /> 📷 TAKE PHOTO WITH CAMERA
-                    </button>
+                    
+                    {/* CAMERA LABEL - Bypasses iOS click() bugs */}
+                    <label className="btn-green-senior" style={{ width: '100%', minHeight: '56px', fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', margin: 0 }}>
+                      <Camera size={22} style={{ marginRight: '8px' }} /> 📷 TAKE PHOTO WITH CAMERA
+                      <input type="file" accept="image/*" capture="environment" onChange={handlePhotosSelected} style={{ display: 'none' }} />
+                    </label>
 
-                    <button className="btn-outline" style={{ width: '100%', minHeight: '54px', fontSize: '0.95rem', fontWeight: 'bold', background: '#ffffff', color: 'var(--pine-deep)', justifyContent: 'center' }} onClick={handleTriggerLibrary}>
+                    {/* LIBRARY LABEL */}
+                    <label className="btn-outline" style={{ width: '100%', minHeight: '54px', fontSize: '0.95rem', fontWeight: 'bold', background: '#ffffff', color: 'var(--pine-deep)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', margin: 0 }}>
                       🖼️ CHOOSE FROM PHOTO LIBRARY
-                    </button>
+                      <input type="file" accept="image/*" multiple onChange={handlePhotosSelected} style={{ display: 'none' }} />
+                    </label>
 
                     <button className="btn-outline" style={{ width: '100%', minHeight: '46px', color: '#ffffff', borderColor: 'rgba(255,255,255,0.3)', background: 'transparent', justifyContent: 'center', marginTop: '0.5rem' }} onClick={handleNavigateHome}>
                       🏠 Cancel & Return to Main Dashboard
