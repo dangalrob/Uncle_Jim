@@ -1018,6 +1018,68 @@ app.post('/api/admin/clear-inventory', authenticateToken, requireRole(['admin'])
   }
 });
 
+// Endpoint: Admin Live Indicative Dashboard Statistics
+app.get('/api/admin/dashboard-stats', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const totalRow = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ?`, [estateId]);
+    const draftRow = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ? AND status = 'draft'`, [estateId]);
+    const releasedRow = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ? AND status = 'released'`, [estateId]);
+    const assignedRow = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ? AND (status = 'assigned' OR status = 'completed' OR status = 'distributed' OR id IN (SELECT item_id FROM assignments))`, [estateId]);
+    const completedRow = await dbGet(`SELECT COUNT(*) as count FROM items WHERE estate_id = ? AND (status = 'completed' OR status = 'distributed')`, [estateId]);
+
+    const recentAudit = await dbAll(`
+      SELECT audit_logs.*, users.name as user_name 
+      FROM audit_logs 
+      LEFT JOIN users ON audit_logs.user_id = users.id 
+      WHERE audit_logs.estate_id = ? 
+      ORDER BY audit_logs.created_at DESC 
+      LIMIT 25
+    `, [estateId]);
+
+    const needsDecision = await dbAll(`
+      SELECT items.id, items.title, COUNT(interests.id) as interest_count
+      FROM items
+      JOIN interests ON items.id = interests.item_id
+      WHERE items.estate_id = ? AND items.status != 'assigned' AND items.status != 'completed'
+      GROUP BY items.id
+      HAVING interest_count > 1
+    `, [estateId]);
+
+    res.json({
+      totalItems: totalRow?.count || 0,
+      draftItems: draftRow?.count || 0,
+      releasedItems: releasedRow?.count || 0,
+      assignedItems: assignedRow?.count || 0,
+      completedItems: completedRow?.count || 0,
+      needsDecision: needsDecision || [],
+      recentAudit: recentAudit || []
+    });
+  } catch (err) {
+    console.error("Dashboard stats error:", err);
+    res.status(500).json({ error: "Failed to fetch dashboard stats" });
+  }
+});
+
+// Endpoint: Admin Audit Logs
+app.get('/api/admin/audit-logs', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const logs = await dbAll(`
+      SELECT audit_logs.*, users.name as user_name, users.email as user_email
+      FROM audit_logs 
+      LEFT JOIN users ON audit_logs.user_id = users.id 
+      WHERE audit_logs.estate_id = ? 
+      ORDER BY audit_logs.created_at DESC 
+      LIMIT 100
+    `, [estateId]);
+    res.json(logs);
+  } catch (err) {
+    console.error("Audit logs error:", err);
+    res.status(500).json({ error: "Failed to fetch audit logs" });
+  }
+});
+
 // Fallback to index.html for SPA routes
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));

@@ -68,6 +68,10 @@ export default function App() {
     recentAudit: []
   });
 
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [logSearchQuery, setLogSearchQuery] = useState('');
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+
   useEffect(() => {
     loadStagedQueue();
   }, []);
@@ -90,6 +94,21 @@ export default function App() {
       }
     } catch (err) {
       console.error("Failed to load dashboard stats:", err);
+    }
+  };
+
+  const fetchAuditLogs = async () => {
+    setIsLoadingLogs(true);
+    try {
+      const res = await fetch('/api/admin/audit-logs');
+      if (res.ok) {
+        const data = await res.json();
+        setAuditLogs(data || []);
+      }
+    } catch (err) {
+      console.error("Failed to load audit logs:", err);
+    } finally {
+      setIsLoadingLogs(false);
     }
   };
 
@@ -243,9 +262,13 @@ export default function App() {
   };
 
   const handleOpenCapture = () => {
-    setCurrentView('capture');
-    setCaptureStep('take_photo');
     setCapturedPhotos([]);
+    setItemTitle('');
+    setItemLocation('');
+    setItemCategory('');
+    setItemNotes('');
+    setCaptureStep('take_photo');
+    setCurrentView('capture');
     setMobileNavOpen(false);
     setTimeout(() => {
       if (cameraInputRef.current) {
@@ -539,6 +562,12 @@ export default function App() {
                 <Mail size={18} /> Email Catalog Report
               </button>
             )}
+
+            {currentUser?.role === 'admin' && (
+              <button className={`sidebar-item ${currentView === 'logs' ? 'active' : ''}`} onClick={() => { setCurrentView('logs'); fetchAuditLogs(); setMobileNavOpen(false); }}>
+                <History size={18} /> Logs
+              </button>
+            )}
           </div>
 
           <div style={{ padding: '1rem', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
@@ -665,106 +694,117 @@ export default function App() {
           {/* MOCKUP 2: ADMIN DASHBOARD (HOME) */}
           {currentView === 'dashboard' && currentUser?.role === 'admin' && (
             <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
                 <div>
                   <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)' }}>Good morning, Dan</h1>
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Here's the latest from Uncle Jim's estate.</p>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Here's the latest indicative status of Uncle Jim's estate inventory.</p>
                 </div>
-                <button className="btn-green" onClick={() => { setCurrentView('capture'); setCaptureStep('take_photo'); }}>
+                <button className="btn-green" onClick={handleOpenCapture}>
                   + Add Item
                 </button>
               </div>
 
-              {/* 4 Metric KPI Boxes - DYNAMIC FROM DATABASE */}
+              {/* 4 Indicative KPI Stat Buttons - CLICK TO VIEW FILTERED ITEMS */}
               <div className="kpi-grid">
-                <div className="kpi-card">
-                  <div className="kpi-num">{dashboardStats.totalItems || 0}</div>
+                <button
+                  className="kpi-card"
+                  onClick={() => { setStatusFilter(''); setSearchQuery(''); setCurrentView('catalog'); }}
+                  title="Click to view all estate inventory items"
+                >
+                  <div className="kpi-num">{items.length > 0 ? items.length : (dashboardStats.totalItems || 0)}</div>
                   <div className="kpi-label">Total Items</div>
-                </div>
-                <div className="kpi-card">
-                  <div className="kpi-num" style={{ color: '#6a7b72' }}>{dashboardStats.draftItems || 0}</div>
+                  <div className="kpi-btn-hint">View all items →</div>
+                </button>
+
+                <button
+                  className="kpi-card"
+                  onClick={() => { setStatusFilter('draft'); setSearchQuery(''); setCurrentView('catalog'); }}
+                  title="Click to view draft items awaiting research & enrichment"
+                >
+                  <div className="kpi-num" style={{ color: '#6a7b72' }}>
+                    {items.length > 0 ? items.filter(i => i.status === 'draft').length : (dashboardStats.draftItems || 0)}
+                  </div>
                   <div className="kpi-label">Draft</div>
-                </div>
-                <div className="kpi-card">
-                  <div className="kpi-num" style={{ color: '#2e7d32' }}>{dashboardStats.releasedItems || 0}</div>
+                  <div className="kpi-btn-hint">View draft queue →</div>
+                </button>
+
+                <button
+                  className="kpi-card"
+                  onClick={() => { setStatusFilter('released'); setSearchQuery(''); setCurrentView('catalog'); }}
+                  title="Click to view released items for family review"
+                >
+                  <div className="kpi-num" style={{ color: '#2e7d32' }}>
+                    {items.length > 0 ? items.filter(i => i.status === 'released').length : (dashboardStats.releasedItems || 0)}
+                  </div>
                   <div className="kpi-label">Released</div>
-                </div>
-                <div className="kpi-card">
-                  <div className="kpi-num" style={{ color: '#1565c0' }}>{dashboardStats.assignedItems || 0}</div>
+                  <div className="kpi-btn-hint">View released catalog →</div>
+                </button>
+
+                <button
+                  className="kpi-card"
+                  onClick={() => { setStatusFilter('assigned'); setSearchQuery(''); setCurrentView('catalog'); }}
+                  title="Click to view assigned & distributed items"
+                >
+                  <div className="kpi-num" style={{ color: '#1565c0' }}>
+                    {items.length > 0 ? items.filter(i => ['assigned', 'completed', 'distributed'].includes(i.status)).length : (dashboardStats.assignedItems || 0)}
+                  </div>
                   <div className="kpi-label">Assigned</div>
-                </div>
+                  <div className="kpi-btn-hint">View assignments →</div>
+                </button>
               </div>
 
-              {/* Two Column Layout: Recent Activity vs Needs Your Attention */}
-              <div className="dash-columns">
-                <div className="dash-card">
-                  <div className="dash-card-header">
-                    <div className="dash-card-title">Recent Activity</div>
-                  </div>
-
-                  <div className="activity-list">
-                    {dashboardStats.recentAudit && dashboardStats.recentAudit.length > 0 ? (
-                      dashboardStats.recentAudit.slice(0, 5).map((log, idx) => (
-                        <div key={idx} className="activity-item">
-                          <div className="activity-icon">📝</div>
-                          <div>
-                            <div className="activity-desc">
-                              <strong>{log.user_name || 'System'}</strong>: {log.action ? log.action.replace('_', ' ') : 'Updated item'} {log.details ? `(${log.details})` : ''}
-                            </div>
-                            <div className="activity-time">{new Date(log.created_at).toLocaleString()}</div>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div style={{ color: 'var(--text-muted)', fontSize: '0.88rem', padding: '1rem 0' }}>
-                        No activity recorded yet. Take photos to start building the inventory.
-                      </div>
-                    )}
-                  </div>
+              {/* Needs Your Attention & Management Panel */}
+              <div className="dash-card" style={{ marginBottom: '1.5rem' }}>
+                <div className="dash-card-header">
+                  <div className="dash-card-title">Needs Your Attention</div>
+                  <button
+                    className="btn-outline"
+                    style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }}
+                    onClick={() => { setCurrentView('logs'); fetchAuditLogs(); }}
+                  >
+                    📋 View Logs in Menu →
+                  </button>
                 </div>
 
-                <div className="dash-card">
-                  <div className="dash-card-header">
-                    <div className="dash-card-title">Needs Your Attention</div>
-                  </div>
-
-                  <div>
-                    {dashboardStats.needsDecision && dashboardStats.needsDecision.length > 0 ? (
-                      <div className="attention-item">
-                        <div className="attention-bullet bullet-red"></div>
-                        <div style={{ flex: 1, fontWeight: '500' }}>
-                          {dashboardStats.needsDecision.length} item(s) with multiple interested family members waiting for assignment
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="attention-item">
-                        <div className="attention-bullet bullet-green"></div>
-                        <div style={{ flex: 1, fontWeight: '500' }}>
-                          All item assignments and reviews are up to date!
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="attention-item">
-                      <div className="attention-bullet bullet-orange"></div>
+                <div>
+                  {dashboardStats.needsDecision && dashboardStats.needsDecision.length > 0 ? (
+                    <div className="attention-item" style={{ cursor: 'pointer' }} onClick={() => setCurrentView('assignments')}>
+                      <div className="attention-bullet bullet-red"></div>
                       <div style={{ flex: 1, fontWeight: '500' }}>
-                        {dashboardStats.draftItems || 0} item(s) in Draft queue waiting for AI Workbench research
+                        {dashboardStats.needsDecision.length} item(s) with multiple interested family members waiting for assignment decision ➔
                       </div>
                     </div>
-
+                  ) : (
                     <div className="attention-item">
                       <div className="attention-bullet bullet-green"></div>
                       <div style={{ flex: 1, fontWeight: '500' }}>
-                        {dashboardStats.releasedItems || 0} item(s) currently released for family review
+                        All item assignments and reviews are up to date!
                       </div>
+                    </div>
+                  )}
+
+                  <div className="attention-item" style={{ cursor: 'pointer' }} onClick={() => setCurrentView('workbench')}>
+                    <div className="attention-bullet bullet-orange"></div>
+                    <div style={{ flex: 1, fontWeight: '500' }}>
+                      {items.filter(i => i.status === 'draft').length || dashboardStats.draftItems || 0} item(s) in Draft queue waiting for AI Workbench visual research ➔
                     </div>
                   </div>
 
-                  <div style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end' }}>
-                    <button className="btn-outline" style={{ fontSize: '0.8rem', color: '#d32f2f', borderColor: '#ffcdd2' }} onClick={handleClearInventory}>
-                      🗑️ Reset & Clear Inventory Database
-                    </button>
+                  <div className="attention-item" style={{ cursor: 'pointer' }} onClick={() => { setStatusFilter('released'); setCurrentView('catalog'); }}>
+                    <div className="attention-bullet bullet-green"></div>
+                    <div style={{ flex: 1, fontWeight: '500' }}>
+                      {items.filter(i => i.status === 'released').length || dashboardStats.releasedItems || 0} item(s) currently released for family review ➔
+                    </div>
                   </div>
+                </div>
+
+                <div style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <button className="btn-outline" style={{ fontSize: '0.85rem' }} onClick={() => { setCurrentView('logs'); fetchAuditLogs(); }}>
+                    📜 Open Full Audit & Activity Logs
+                  </button>
+                  <button className="btn-outline" style={{ fontSize: '0.8rem', color: '#d32f2f', borderColor: '#ffcdd2' }} onClick={handleClearInventory}>
+                    🗑️ Reset & Clear Inventory Database
+                  </button>
                 </div>
               </div>
             </div>
@@ -959,7 +999,7 @@ export default function App() {
 
                   {/* 3 Clear Senior-Friendly Exit Options */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                    <button className="btn-green-senior" style={{ width: '100%', minHeight: '54px' }} onClick={() => { setCapturedPhotos([]); setItemTitle(''); setCaptureStep('take_photo'); }}>
+                    <button className="btn-green-senior" style={{ width: '100%', minHeight: '54px' }} onClick={handleOpenCapture}>
                       ➕ ADD ANOTHER ITEM
                     </button>
 
@@ -1396,6 +1436,138 @@ export default function App() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ADMIN AUDIT & ACTIVITY LOGS VIEW (ACCESSED VIA MENU) */}
+          {currentView === 'logs' && currentUser?.role === 'admin' && (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div>
+                  <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)' }}>📋 Activity & Audit Logs</h1>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Real-time chronological log of all estate inventory actions, reviews, assignments, and updates.</p>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn-outline" onClick={fetchAuditLogs}>
+                    🔄 Refresh Logs
+                  </button>
+                  <button className="btn-green" onClick={handleNavigateHome}>
+                    🏠 Return to Dashboard
+                  </button>
+                </div>
+              </div>
+
+              {/* Search & Filter Logs Bar */}
+              <div style={{ marginBottom: '1.25rem', display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', flex: 1, minWidth: '240px' }}>
+                  <input
+                    type="text"
+                    className="search-input"
+                    placeholder="Search logs by user, action, target item, or notes..."
+                    value={logSearchQuery}
+                    onChange={e => setLogSearchQuery(e.target.value)}
+                    style={{ width: '100%', paddingLeft: '2.4rem' }}
+                  />
+                  <Search size={16} color="var(--text-muted)" style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)' }} />
+                  {logSearchQuery && (
+                    <button
+                      onClick={() => setLogSearchQuery('')}
+                      style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Showing {auditLogs.filter(log => {
+                    if (!logSearchQuery) return true;
+                    const q = logSearchQuery.toLowerCase();
+                    const action = (log.action || '').toLowerCase();
+                    const user = (log.user_name || log.user_email || log.user_id || '').toLowerCase();
+                    const details = typeof log.details === 'string' ? log.details.toLowerCase() : JSON.stringify(log.details || {}).toLowerCase();
+                    const target = (log.target_type || '').toLowerCase();
+                    return action.includes(q) || user.includes(q) || details.includes(q) || target.includes(q);
+                  }).length} event(s)
+                </span>
+              </div>
+
+              {/* Logs Data Table Card */}
+              <div className="logs-card">
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="log-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '170px' }}>Timestamp</th>
+                        <th style={{ width: '150px' }}>User</th>
+                        <th style={{ width: '140px' }}>Action</th>
+                        <th style={{ width: '150px' }}>Target</th>
+                        <th>Details & Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditLogs
+                        .filter(log => {
+                          if (!logSearchQuery) return true;
+                          const q = logSearchQuery.toLowerCase();
+                          const action = (log.action || '').toLowerCase();
+                          const user = (log.user_name || log.user_email || log.user_id || '').toLowerCase();
+                          const details = typeof log.details === 'string' ? log.details.toLowerCase() : JSON.stringify(log.details || {}).toLowerCase();
+                          const target = (log.target_type || '').toLowerCase();
+                          return action.includes(q) || user.includes(q) || details.includes(q) || target.includes(q);
+                        })
+                        .map((log, idx) => {
+                          const act = (log.action || '').toUpperCase();
+                          let badgeClass = 'other';
+                          if (act.includes('CREATE') || act.includes('ADD') || act.includes('UPLOAD')) badgeClass = 'create';
+                          else if (act.includes('DELETE') || act.includes('CLEAR') || act.includes('REMOVE')) badgeClass = 'delete';
+                          else if (act.includes('ENRICH') || act.includes('UPDATE') || act.includes('EDIT')) badgeClass = 'enrich';
+                          else if (act.includes('INTEREST') || act.includes('DECISION')) badgeClass = 'interest';
+                          else if (act.includes('ASSIGN') || act.includes('FULFILL') || act.includes('SHIP')) badgeClass = 'assign';
+
+                          let formattedDetails = log.details;
+                          try {
+                            if (typeof log.details === 'string' && (log.details.startsWith('{') || log.details.startsWith('['))) {
+                              const parsed = JSON.parse(log.details);
+                              formattedDetails = Object.entries(parsed).map(([k, v]) => `${k}: ${v}`).join(' | ');
+                            }
+                          } catch (e) {
+                            formattedDetails = log.details;
+                          }
+
+                          return (
+                            <tr key={idx}>
+                              <td style={{ whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                                {new Date(log.created_at).toLocaleString()}
+                              </td>
+                              <td style={{ fontWeight: '600', color: 'var(--pine-deep)' }}>
+                                {log.user_name || log.user_email || log.user_id || 'System'}
+                              </td>
+                              <td>
+                                <span className={`log-badge log-badge-${badgeClass}`}>
+                                  {log.action ? log.action.replace('_', ' ') : 'EVENT'}
+                                </span>
+                              </td>
+                              <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                {log.target_type ? `${log.target_type} ${log.target_id ? `(#${log.target_id})` : ''}` : 'Estate'}
+                              </td>
+                              <td style={{ fontSize: '0.86rem', color: '#2c3e35' }}>
+                                {formattedDetails || '—'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      {auditLogs.length === 0 && (
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
+                            <History size={36} color="var(--pine-primary)" style={{ opacity: 0.4, marginBottom: '0.5rem' }} />
+                            <div>{isLoadingLogs ? 'Loading activity logs...' : 'No activity recorded yet in the audit log.'}</div>
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           )}
         </div>

@@ -264,7 +264,7 @@ body {
 .badge-ready { background: #fff3cd; color: #664d03; }
 .badge-shipped { background: #cfe2ff; color: #084298; }
 
-/* Dashboard KPI Stat Cards */
+/* Dashboard KPI Stat Cards (Interactive Filter Buttons) */
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -276,9 +276,31 @@ body {
   background: #ffffff;
   border: 1px solid var(--border-color);
   border-radius: 12px;
-  padding: 1.25rem;
+  padding: 1.25rem 1rem;
   text-align: center;
   box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  outline: none;
+  position: relative;
+  user-select: none;
+}
+
+.kpi-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+  border-color: var(--pine-primary);
+  background: #fbfdfc;
+}
+
+.kpi-card:active {
+  transform: translateY(-1px);
 }
 
 .kpi-num {
@@ -290,9 +312,25 @@ body {
 }
 
 .kpi-label {
-  font-size: 0.85rem;
+  font-size: 0.88rem;
   color: var(--text-muted);
-  font-weight: 500;
+  font-weight: 600;
+}
+
+.kpi-btn-hint {
+  font-size: 0.72rem;
+  color: var(--pine-primary);
+  margin-top: 0.35rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  opacity: 0.8;
+}
+
+.kpi-card:hover .kpi-btn-hint {
+  opacity: 1;
+  text-decoration: underline;
 }
 
 /* Dashboard Two Column Section */
@@ -919,3 +957,57 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* Audit Logs View Styles */
+.logs-card {
+  background: #ffffff;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.log-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.log-table th {
+  background: #f8faf9;
+  padding: 0.85rem 1rem;
+  font-weight: 600;
+  color: var(--pine-deep);
+  border-bottom: 1.5px solid var(--border-color);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.log-table td {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: middle;
+}
+
+.log-table tr:hover {
+  background: #fdfefe;
+}
+
+.log-badge {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.log-badge-create { background: #e8f5e9; color: #2e7d32; }
+.log-badge-delete { background: #ffebee; color: #c62828; }
+.log-badge-enrich { background: #e3f2fd; color: #1565c0; }
+.log-badge-interest { background: #f3e5f5; color: #7b1fa2; }
+.log-badge-assign { background: #fff3e0; color: #e65100; }
+.log-badge-other { background: #eceff1; color: #455a64; }
+
