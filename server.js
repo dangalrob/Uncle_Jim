@@ -601,14 +601,22 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
 app.delete('/api/items/:id', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const itemId = req.params.id;
+    // We should only allow admins to delete items. (Or contributors if requested, but let's restrict to admin by default for deletion)
+
+    const item = await dbGet(`SELECT id, title FROM items WHERE id = ? AND estate_id = ?`, [itemId, req.user.estate_id]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    // Delete associated data first to keep database clean
     await dbRun(`DELETE FROM item_photos WHERE item_id = ?`, [itemId]);
     await dbRun(`DELETE FROM item_stories WHERE item_id = ?`, [itemId]);
     await dbRun(`DELETE FROM interests WHERE item_id = ?`, [itemId]);
     await dbRun(`DELETE FROM assignments WHERE item_id = ?`, [itemId]);
     await dbRun(`DELETE FROM fulfillments WHERE item_id = ?`, [itemId]);
+
+    // Finally delete the item
     await dbRun(`DELETE FROM items WHERE id = ? AND estate_id = ?`, [itemId, req.user.estate_id]);
 
-    logAudit(req.user.estate_id, req.user.id, 'DELETE_ITEM', 'items', itemId, {});
+    logAudit(req.user.estate_id, req.user.id, 'DELETE_ITEM', 'items', itemId, { title: item.title });
 
     res.json({ success: true });
   } catch (err) {
@@ -616,6 +624,7 @@ app.delete('/api/items/:id', authenticateToken, requireRole(['admin']), async (r
     res.status(500).json({ error: "Failed to delete item" });
   }
 });
+
 
 // ----------------------------------------------------
 // BATCH RELEASE ENDPOINTS

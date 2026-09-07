@@ -4,7 +4,7 @@ import {
   BookOpen, CheckSquare, Truck, UserCheck, History, BarChart2, Settings, 
   Search, Filter, Heart, ArrowLeft, ArrowRight, CheckCircle2, Camera, 
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
-  Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2
+  Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import AdminWorkbench from './components/AdminWorkbench';
@@ -109,6 +109,28 @@ export default function App() {
       console.error("Failed to load audit logs:", err);
     } finally {
       setIsLoadingLogs(false);
+    }
+  };
+
+  const handleDeleteItem = async (itemId, e) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    if (!window.confirm("Are you sure you want to delete this item? This action cannot be undone.")) return;
+    
+    try {
+      const res = await fetch(`/api/items/${itemId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        fetchItems();
+        fetchDashboardStats(); // Update dashboard counts
+      } else {
+        alert("Failed to delete item.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error deleting item.");
     }
   };
 
@@ -1048,10 +1070,19 @@ export default function App() {
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1.25rem' }}>
                   {items.map(item => (
-                    <div key={item.id} className="card" style={{ padding: '0.85rem', cursor: 'pointer' }} onClick={() => { setSelectedItem(item); setCurrentView('review'); }}>
+                    <div key={item.id} className="card" style={{ padding: '0.85rem', cursor: 'pointer', position: 'relative' }} onClick={() => { setSelectedItem(item); setCurrentView('review'); }}>
                       <div style={{ position: 'relative' }}>
                         <img src={item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'} style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }} />
                         <Heart size={18} color="#d32f2f" style={{ position: 'absolute', bottom: '12px', right: '12px', background: '#fff', borderRadius: '50%', padding: '3px' }} />
+                        {currentUser?.role === 'admin' && (
+                          <button
+                            onClick={(e) => handleDeleteItem(item.id, e)}
+                            style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(211,47,47,0.9)', color: '#fff', border: 'none', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 10 }}
+                            title="Delete Item"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
                       <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{item.title}</div>
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{item.category_name || "Books"}</div>
