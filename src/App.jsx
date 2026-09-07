@@ -263,7 +263,7 @@ export default function App() {
         url: URL.createObjectURL(file)
       }));
       setCapturedPhotos(prev => [...prev, ...newPhotos]);
-      setCaptureStep('add_more');
+      setCaptureStep('enter_details');
     }
   };
 
@@ -305,7 +305,7 @@ export default function App() {
       { url: 'https://images.unsplash.com/photo-1580481072645-022f9a6d8310?auto=format&fit=crop&w=600&q=80' }
     ];
     setCapturedPhotos(prev => (prev.length > 0 ? prev : samplePhotos));
-    setCaptureStep('add_more');
+    setCaptureStep('enter_details');
   };
 
   const compressPhotoTo2048 = (file) => {
