@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ExternalLink, Check, ZoomIn, ArrowLeft, ArrowRight, Trash2, CheckCircle2 } from 'lucide-react';
 
 /**
  * HUMAN-IN-THE-LOOP VISUAL IDENTIFICATION WORKBENCH
  * -----------------------------------------------------------------------------
- * 1. NO AUTOMATED VALUATION: Valuation requires human judgement and is omitted.
+ * 1. NO AUTOMATED VALUATION: Valuation requires human judgement and is entered manually.
  * 2. HUMAN PICTURE SELECTION: Shows candidate web pictures; the user clicks the 
  *    picture that matches their item the most.
  * 3. ADOPT IDENTIFICATION: Clicking a candidate picture copies its verified title,
@@ -17,7 +17,18 @@ export default function AdminWorkbench({ items, onApproveEnrichment, onDeleteIte
   const [editTitle, setEditTitle] = useState('');
   const [editEra, setEditEra] = useState('');
   const [editNotes, setEditNotes] = useState('');
+  const [editValue, setEditValue] = useState('');
   const [selectedMatchIndex, setSelectedMatchIndex] = useState(null);
+
+  useEffect(() => {
+    if (currentItem) {
+      setEditTitle(currentItem.title || '');
+      setEditEra(currentItem.era || '');
+      setEditNotes(currentItem.description || '');
+      setEditValue(currentItem.value || '');
+      setSelectedMatchIndex(null);
+    }
+  }, [selectedItemIndex, currentItem?.id]);
 
   if (!currentItem) {
     return (
@@ -70,15 +81,16 @@ export default function AdminWorkbench({ items, onApproveEnrichment, onDeleteIte
   };
 
   const handleSaveAndApprove = () => {
-    const selectedCandidate = selectedMatchIndex !== null ? candidateMatches[selectedMatchIndex] : candidateMatches[0];
     onApproveEnrichment(currentItem.id, {
-      title: editTitle || selectedCandidate.title,
-      era: editEra || selectedCandidate.era,
-      notes: editNotes || selectedCandidate.origin
+      title: editTitle,
+      era: editEra,
+      notes: editNotes,
+      value: editValue
     });
     setEditTitle('');
     setEditEra('');
     setEditNotes('');
+    setEditValue('');
     setSelectedMatchIndex(null);
     if (selectedItemIndex < items.length - 1) {
       setSelectedItemIndex(selectedItemIndex + 1);
@@ -93,6 +105,7 @@ export default function AdminWorkbench({ items, onApproveEnrichment, onDeleteIte
       setEditTitle('');
       setEditEra('');
       setEditNotes('');
+      setEditValue('');
       setSelectedMatchIndex(null);
       if (selectedItemIndex > 0) {
         setSelectedItemIndex(selectedItemIndex - 1);
@@ -238,17 +251,22 @@ export default function AdminWorkbench({ items, onApproveEnrichment, onDeleteIte
 
           <div style={{ marginBottom: '0.85rem' }}>
             <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Identified Item Title</label>
-            <input type="text" className="senior-input" value={editTitle || itemTitleClean} onChange={e=>setEditTitle(e.target.value)} />
+            <input type="text" className="senior-input" value={editTitle} placeholder="Item title" onChange={e=>setEditTitle(e.target.value)} />
           </div>
 
           <div style={{ marginBottom: '0.85rem' }}>
             <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Era / Manufacturing Period</label>
-            <input type="text" className="senior-input" value={editEra || 'Mid-Century Vintage'} onChange={e=>setEditEra(e.target.value)} />
+            <input type="text" className="senior-input" value={editEra} placeholder="e.g. 1970s" onChange={e=>setEditEra(e.target.value)} />
+          </div>
+
+          <div style={{ marginBottom: '0.85rem' }}>
+            <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Estimated Value</label>
+            <input type="text" className="senior-input" value={editValue} placeholder="e.g. $150" onChange={e=>setEditValue(e.target.value)} />
           </div>
 
           <div style={{ marginBottom: '1.25rem' }}>
             <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Provenance & Identification Notes</label>
-            <textarea className="senior-input" rows="3" value={editNotes || `Verified match from web visual search. Preserved in ${currentItem.location_in_house || 'Residence'}.`} onChange={e=>setEditNotes(e.target.value)}></textarea>
+            <textarea className="senior-input" rows="3" value={editNotes} placeholder="Provenance, condition, and identification notes..." onChange={e=>setEditNotes(e.target.value)}></textarea>
           </div>
 
           <button className="btn-green-senior" style={{ width: '100%' }} onClick={handleSaveAndApprove}>

@@ -4,7 +4,7 @@ import {
   BookOpen, CheckSquare, Truck, UserCheck, History, BarChart2, Settings, 
   Search, Filter, Heart, ArrowLeft, ArrowRight, CheckCircle2, Camera, 
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
-  Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2
+  Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import AdminWorkbench from './components/AdminWorkbench';
@@ -20,7 +20,9 @@ export default function App() {
   const [itemTitle, setItemTitle] = useState('');
   const [itemLocation, setItemLocation] = useState('');
   const [itemCategory, setItemCategory] = useState('');
+  const [itemValue, setItemValue] = useState('');
   const [itemNotes, setItemNotes] = useState('');
+  const [activeReviewPhotoIdx, setActiveReviewPhotoIdx] = useState(0);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -294,6 +296,7 @@ export default function App() {
     setItemLocation('');
     setItemCategory('');
     setItemNotes('');
+    setItemValue('');
     setCaptureStep('take_photo');
     setCurrentView('capture');
     setMobileNavOpen(false);
@@ -385,10 +388,11 @@ export default function App() {
       if (offlineMode) {
         // Save locally to IndexedDB staging store on iPhone
         await offlineStorage.saveStagedItem({
-          title: itemTitle || 'Staged Item',
-          locationInHouse: itemLocation || 'House',
+          title: itemTitle,
+          locationInHouse: itemLocation,
           categoryId: itemCategory,
-          notes: itemNotes
+          notes: itemNotes,
+          value: itemValue
         }, compressedList);
         await loadStagedQueue();
         setCaptureStep('saved_confirmation');
@@ -396,9 +400,11 @@ export default function App() {
       }
 
       const formData = new FormData();
-      formData.append('title', itemTitle || 'Dining Chair');
-      formData.append('locationInHouse', itemLocation || 'Dining room');
+      formData.append('title', itemTitle);
+      formData.append('locationInHouse', itemLocation);
       formData.append('categoryId', itemCategory);
+      formData.append('notes', itemNotes);
+      formData.append('value', itemValue);
       for (let p of compressedList) {
         if (p.file) formData.append('photos', p.file);
       }
@@ -410,10 +416,11 @@ export default function App() {
     } catch (err) {
       // Fallback to offline staging if network error occurs
       await offlineStorage.saveStagedItem({
-        title: itemTitle || 'Staged Item',
-        locationInHouse: itemLocation || 'House',
+        title: itemTitle,
+        locationInHouse: itemLocation,
         categoryId: itemCategory,
-        notes: itemNotes
+        notes: itemNotes,
+        value: itemValue
       }, capturedPhotos);
       await loadStagedQueue();
     } finally {
@@ -435,7 +442,8 @@ export default function App() {
           title: item.title,
           locationInHouse: item.locationInHouse,
           categoryId: item.categoryId,
-          notes: item.notes
+          notes: item.notes,
+          value: item.value
         });
         if (item.photos) {
           for (let p of item.photos) {
@@ -966,25 +974,30 @@ export default function App() {
 
                   <div style={{ marginBottom: '0.85rem' }}>
                     <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Title (optional)</label>
-                    <input type="text" className="senior-input" value={itemTitle} placeholder="Vintage Nautical Telescope" onChange={e=>setItemTitle(e.target.value)} />
+                    <input type="text" className="senior-input" value={itemTitle} placeholder="" onChange={e=>setItemTitle(e.target.value)} />
                   </div>
 
                   <div style={{ marginBottom: '0.85rem' }}>
                     <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Category (optional)</label>
                     <select className="senior-input" value={itemCategory} onChange={e=>setItemCategory(e.target.value)}>
-                      <option value="">Furniture & Decor</option>
+                      <option value="">-- Select Category (Optional) --</option>
                       {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
 
                   <div style={{ marginBottom: '0.85rem' }}>
+                    <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Value (optional)</label>
+                    <input type="text" className="senior-input" value={itemValue} placeholder="" onChange={e=>setItemValue(e.target.value)} />
+                  </div>
+
+                  <div style={{ marginBottom: '0.85rem' }}>
                     <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Quick Notes (optional)</label>
-                    <textarea className="senior-input" rows="2" value={itemNotes} placeholder="Brass & mahogany telescope on wooden tripod. Excellent condition." onChange={e=>setItemNotes(e.target.value)}></textarea>
+                    <textarea className="senior-input" rows="2" value={itemNotes} placeholder="" onChange={e=>setItemNotes(e.target.value)}></textarea>
                   </div>
 
                   <div style={{ marginBottom: '1.25rem' }}>
                     <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Location in House (optional)</label>
-                    <input type="text" className="senior-input" value={itemLocation} placeholder="Study Desk / Living Room" onChange={e=>setItemLocation(e.target.value)} />
+                    <input type="text" className="senior-input" value={itemLocation} placeholder="" onChange={e=>setItemLocation(e.target.value)} />
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -1077,9 +1090,9 @@ export default function App() {
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1.25rem' }}>
                   {items.map(item => (
-                    <div key={item.id} className="card" style={{ padding: '0.85rem', cursor: 'pointer', position: 'relative' }} onClick={() => { setSelectedItem(item); setCurrentView('review'); }}>
+                    <div key={item.id} className="card" style={{ padding: '0.85rem', cursor: 'pointer', position: 'relative' }} onClick={() => { const idx = items.findIndex(i => i.id === item.id); if (idx !== -1) setReviewIndex(idx); setActiveReviewPhotoIdx(0); setSelectedItem(item); setCurrentView('review'); }}>
                       <div style={{ position: 'relative' }}>
-                        <img src={item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'} style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }} />
+                        <img src={item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'} style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }} alt={item.title || "Estate Item"} />
                         <Heart size={18} color="#d32f2f" style={{ position: 'absolute', bottom: '12px', right: '12px', background: '#fff', borderRadius: '50%', padding: '3px' }} />
                         {currentUser?.role === 'admin' && (
                           <button
@@ -1091,8 +1104,15 @@ export default function App() {
                           </button>
                         )}
                       </div>
-                      <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{item.title}</div>
-                      <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{item.category_name || "Books"}</div>
+                      <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{item.title || 'Untitled Item'}</div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{item.category_name || "Uncategorized"}</span>
+                        {item.value && (
+                          <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: 'var(--pine-primary)' }}>
+                            {item.value.startsWith('$') ? item.value : `$${item.value}`}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1101,133 +1121,150 @@ export default function App() {
           )}
 
           {/* MOCKUP 6 & 7: FAMILY MEMBER REVIEW ITEM (ONE AT A TIME) */}
-          {currentView === 'review' && (
-            <div className="review-view-container">
-              <div className="review-top-bar">
-                <button className="btn-outline" onClick={() => setCurrentView('catalog')}><ArrowLeft size={16} /> Back to Browse</button>
-                <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>Item {(reviewIndex % Math.max(1, items.length)) + 1} of {items.length || 1}</span>
-                <div>
-                  <button className="btn-outline" style={{ padding: '0.4rem 0.6rem' }} onClick={() => setReviewIndex(prev => (prev - 1 + Math.max(1, items.length)) % Math.max(1, items.length))} title="Previous Item"><ArrowLeft size={16} /></button>
-                  <button className="btn-outline" style={{ padding: '0.4rem 0.6rem', marginLeft: '4px' }} onClick={() => setReviewIndex(prev => (prev + 1) % Math.max(1, items.length))} title="Next Item"><ArrowRight size={16} /></button>
-                </div>
-              </div>
+          {currentView === 'review' && (() => {
+            const currentReviewItem = items[reviewIndex % Math.max(1, items.length)];
+            const reviewPhotos = currentReviewItem?.photos && currentReviewItem.photos.length > 0
+              ? currentReviewItem.photos
+              : (currentReviewItem?.primary_photo ? [{ photo_url: currentReviewItem.primary_photo, thumbnail_url: currentReviewItem.primary_thumb || currentReviewItem.primary_photo }] : []);
+            const activeDisplayPhoto = reviewPhotos[activeReviewPhotoIdx]?.photo_url || currentReviewItem?.primary_photo || "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=800&q=80";
 
-              {!decisionRecorded ? (
-                <div>
-                  {/* Mockup 6 Main Card */}
-                  <div className="review-main-card">
-                    <div className="review-left-gallery">
-                      <img src={(items[reviewIndex % Math.max(1, items.length)]?.primary_photo) || "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=800&q=80"} className="review-main-img" alt="Item Preview" />
-                      <div className="review-thumbs-row">
-                        <img src={(items[reviewIndex % Math.max(1, items.length)]?.primary_photo) || "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=400&q=80"} className="review-thumb active" alt="Thumb 1" />
-                        <img src="https://images.unsplash.com/photo-1580481072645-022f9a6d8310?auto=format&fit=crop&w=400&q=80" className="review-thumb" alt="Thumb 2" />
-                        <img src="https://images.unsplash.com/photo-1567538096630-e0c55bd6374c?auto=format&fit=crop&w=400&q=80" className="review-thumb" alt="Thumb 3" />
+            return (
+              <div className="review-view-container">
+                <div className="review-top-bar">
+                  <button className="btn-outline" onClick={() => setCurrentView('catalog')}><ArrowLeft size={16} /> Back to Browse</button>
+                  <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>Item {(reviewIndex % Math.max(1, items.length)) + 1} of {items.length || 1}</span>
+                  <div>
+                    <button className="btn-outline" style={{ padding: '0.4rem 0.6rem' }} onClick={() => { setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev - 1 + Math.max(1, items.length)) % Math.max(1, items.length)); }} title="Previous Item"><ArrowLeft size={16} /></button>
+                    <button className="btn-outline" style={{ padding: '0.4rem 0.6rem', marginLeft: '4px' }} onClick={() => { setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev + 1) % Math.max(1, items.length)); }} title="Next Item"><ArrowRight size={16} /></button>
+                  </div>
+                </div>
+
+                {!decisionRecorded ? (
+                  <div>
+                    {/* Mockup 6 Main Card */}
+                    <div className="review-main-card">
+                      <div className="review-left-gallery">
+                        <img src={activeDisplayPhoto} className="review-main-img" alt={currentReviewItem?.title || "Item Preview"} />
+                        {reviewPhotos.length <= 1 ? (
+                          <div className="review-thumbs-row" style={{ alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
+                            {reviewPhotos.length === 1 && (
+                              <img src={reviewPhotos[0].thumbnail_url || reviewPhotos[0].photo_url} className="review-thumb active" alt="Primary Photo" />
+                            )}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#f0f4f2', border: '1px dashed var(--border-color)', borderRadius: '8px', padding: '0.5rem 0.85rem', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                              <ImageOff size={18} />
+                              <span>No other pictures</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="review-thumbs-row">
+                            {reviewPhotos.map((p, idx) => (
+                              <img
+                                key={p.id || idx}
+                                src={p.thumbnail_url || p.photo_url}
+                                className={`review-thumb ${activeReviewPhotoIdx === idx ? 'active' : ''}`}
+                                onClick={() => setActiveReviewPhotoIdx(idx)}
+                                alt={`Thumb ${idx + 1}`}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="review-right-info">
+                        <div className="review-item-header">
+                          <h2 className="review-item-name">{currentReviewItem?.title || "Untitled Item"}</h2>
+                          <Heart size={22} color="#d32f2f" fill="#d32f2f" />
+                        </div>
+
+                        <table className="details-table">
+                          <tbody>
+                            <tr><td className="label">Category</td><td className="val">{currentReviewItem?.category_name || "—"}</td></tr>
+                            <tr><td className="label">Location</td><td className="val">{currentReviewItem?.location_in_house || "—"}</td></tr>
+                            <tr><td className="label">Value</td><td className="val">{currentReviewItem?.value ? (currentReviewItem.value.startsWith('$') ? currentReviewItem.value : `$${currentReviewItem.value}`) : "—"}</td></tr>
+                            <tr><td className="label">Dimensions</td><td className="val">{currentReviewItem?.dimensions || "—"}</td></tr>
+                            <tr><td className="label">Condition</td><td className="val">{currentReviewItem?.condition || "—"}</td></tr>
+                          </tbody>
+                        </table>
+
+                        <div className="review-section-title">Description</div>
+                        <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '0.85rem' }}>
+                          {currentReviewItem?.description || "No description provided."}
+                        </div>
+
+                        {(currentReviewItem?.story || currentReviewItem?.story_text) && (
+                          <>
+                            <div className="review-section-title">Story / History</div>
+                            <div className="review-story-text">
+                              "{currentReviewItem.story || currentReviewItem.story_text}"
+                            </div>
+                          </>
+                        )}
+
+                        {currentReviewItem?.category_name && (
+                          <div className="tags-row">
+                            <span className="tag-pill">{currentReviewItem.category_name}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    <div className="review-right-info">
-                      <div className="review-item-header">
-                        <h2 className="review-item-name">{items[reviewIndex % Math.max(1, items.length)]?.title || "Dining Chair"}</h2>
-                        <Heart size={22} color="#d32f2f" fill="#d32f2f" />
+                    {/* Mockup 7: Who's Interested & Decision Panel */}
+                    <div className="decision-panel">
+                      <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.1rem', marginBottom: '0.85rem' }}>Who's interested?</h3>
+                      {currentReviewItem?.interested_count > 0 ? (
+                        <div style={{ fontSize: '0.9rem', color: 'var(--pine-primary)', fontWeight: 'bold', marginBottom: '1rem' }}>
+                          ❤️ {currentReviewItem.interested_count} family member(s) marked interest in this item.
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontStyle: 'italic', marginBottom: '1rem' }}>
+                          No family members have marked interest yet.
+                        </div>
+                      )}
+
+                      <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.1rem', marginBottom: '0.85rem' }}>Your decision</h3>
+                      <div className="decision-btn-group">
+                        <button className={`btn-decision ${userDecision === 'interested' ? 'active-interested' : ''}`} onClick={() => setUserDecision('interested')}>
+                          💙 I'm Interested
+                        </button>
+                        <button className={`btn-decision ${userDecision === 'not_interested' ? 'active-pass' : ''}`} onClick={() => setUserDecision('not_interested')}>
+                          🚫 Not Interested
+                        </button>
+                        <button className="btn-decision" onClick={() => setUserDecision('skip')}>
+                          ⏰ Skip for Now
+                        </button>
                       </div>
 
-                      <table className="details-table">
-                        <tbody>
-                          <tr><td className="label">Category</td><td className="val">{items[reviewIndex % Math.max(1, items.length)]?.category_name || "Furniture"}</td></tr>
-                          <tr><td className="label">Location</td><td className="val">{items[reviewIndex % Math.max(1, items.length)]?.location_in_house || "Dining Room"}</td></tr>
-                          <tr><td className="label">Dimensions</td><td className="val">{items[reviewIndex % Math.max(1, items.length)]?.dimensions || "18\" W x 18\" D x 36\" H"}</td></tr>
-                          <tr><td className="label">Condition</td><td className="val">{items[reviewIndex % Math.max(1, items.length)]?.condition || "Good"}</td></tr>
-                        </tbody>
-                      </table>
-
-                      <div className="review-section-title">Description</div>
-                      <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '0.85rem' }}>
-                        {items[reviewIndex % Math.max(1, items.length)]?.description || "Solid wood dining chair from the lake house. Classic style, very sturdy."}
+                      <div style={{ marginBottom: '1rem' }}>
+                        <input type="text" className="form-input" style={{ width: '100%' }} placeholder="Add an optional comment..." value={userComment} onChange={e=>setUserComment(e.target.value)} />
                       </div>
 
-                      <div className="review-section-title">Story / History</div>
-                      <div className="review-story-text">
-                        "These chairs were at the cabin for as long as I can remember. Uncle Jim used them for big family dinners every summer."
-                      </div>
-
-                      <div className="tags-row">
-                        <span className="tag-pill">dining</span>
-                        <span className="tag-pill">wood</span>
-                        <span className="tag-pill">lake house</span>
-                      </div>
+                      <button className="btn-green" style={{ width: '100%', padding: '0.8rem' }} onClick={() => handleSaveFamilyDecision(currentReviewItem?.id || 'item_101')}>
+                        Save My Decision
+                      </button>
                     </div>
                   </div>
+                ) : (
+                  /* MOCKUP 8: DECISION RECORDED CONFIRMATION */
+                  <div className="confirmation-card">
+                    <div className="check-circle-lg">✓</div>
+                    <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.8rem', color: 'var(--pine-deep)' }}>Thanks!</h2>
+                    <p style={{ color: 'var(--text-muted)', marginBottom: '1.5rem' }}>Your decision has been recorded.</p>
 
-                  {/* Mockup 7: Who's Interested & Decision Panel */}
-                  <div className="decision-panel">
-                    <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.1rem', marginBottom: '0.85rem' }}>Who's interested?</h3>
-                    <div className="interested-relatives-list">
-                      <div className="relative-interest-row">
-                        <div className="user-avatar" style={{ background: '#1976d2' }}>JH</div>
-                        <div style={{ fontWeight: 'bold', fontSize: '0.85rem' }}>Jean</div>
-                        <Heart size={16} color="#d32f2f" fill="#d32f2f" />
-                        <div className="relative-comment">"I remember sitting in this chair as a kid."</div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Sep 3</div>
-                      </div>
-                      <div className="relative-interest-row">
-                        <div className="user-avatar" style={{ background: '#7b1fa2' }}>TM</div>
-                        <div style={{ fontWeight: 'bold', fontSize: '0.85rem' }}>Tim</div>
-                        <Heart size={16} color="#d32f2f" fill="#d32f2f" />
-                        <div className="relative-comment">"Love this chair!"</div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Sep 3</div>
-                      </div>
-                      <div className="relative-interest-row">
-                        <div className="user-avatar" style={{ background: '#388e3c' }}>SB</div>
-                        <div style={{ fontWeight: 'bold', fontSize: '0.85rem' }}>Susan</div>
-                        <Heart size={16} color="#d32f2f" fill="#d32f2f" />
-                        <div className="relative-comment">"Would be perfect in our sunroom."</div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Sep 2</div>
+                    <div style={{ background: 'var(--bg-subtle)', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem' }}>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>You marked:</div>
+                      <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: '#2e7d32', marginTop: '4px' }}>
+                        {userDecision === 'interested' ? "❤️ I'm Interested" : userDecision === 'not_interested' ? "🚫 Not Interested" : "⏰ Skipped"}
                       </div>
                     </div>
 
-                    <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.1rem', marginBottom: '0.85rem' }}>Your decision</h3>
-                    <div className="decision-btn-group">
-                      <button className={`btn-decision ${userDecision === 'interested' ? 'active-interested' : ''}`} onClick={() => setUserDecision('interested')}>
-                        💙 I'm Interested
-                      </button>
-                      <button className={`btn-decision ${userDecision === 'not_interested' ? 'active-pass' : ''}`} onClick={() => setUserDecision('not_interested')}>
-                        🚫 Not Interested
-                      </button>
-                      <button className="btn-decision" onClick={() => setUserDecision('skip')}>
-                        ⏰ Skip for Now
-                      </button>
-                    </div>
-
-                    <div style={{ marginBottom: '1rem' }}>
-                      <input type="text" className="form-input" style={{ width: '100%' }} placeholder="Add an optional comment..." value={userComment} onChange={e=>setUserComment(e.target.value)} />
-                    </div>
-
-                    <button className="btn-green" style={{ width: '100%', padding: '0.8rem' }} onClick={() => handleSaveFamilyDecision(items[reviewIndex % Math.max(1, items.length)]?.id || 'item_101')}>
-                      Save My Decision
+                    <button className="btn-green" style={{ width: '100%', padding: '0.85rem' }} onClick={() => { setDecisionRecorded(false); setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev + 1) % Math.max(1, items.length)); }}>
+                      Proceed to Next Item ➔
                     </button>
                   </div>
-                </div>
-              ) : (
-                /* MOCKUP 8: DECISION RECORDED CONFIRMATION */
-                <div className="confirmation-card">
-                  <div className="check-circle-lg">✓</div>
-                  <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.8rem', color: 'var(--pine-deep)' }}>Thanks!</h2>
-                  <p style={{ color: 'var(--text-muted)', marginBottom: '1.5rem' }}>Your decision has been recorded.</p>
-
-                  <div style={{ background: 'var(--bg-subtle)', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem' }}>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>You marked:</div>
-                    <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: '#2e7d32', marginTop: '4px' }}>
-                      {userDecision === 'interested' ? "❤️ I'm Interested" : userDecision === 'not_interested' ? "🚫 Not Interested" : "⏰ Skipped"}
-                    </div>
-                  </div>
-
-                  <button className="btn-green" style={{ width: '100%', padding: '0.85rem' }} onClick={() => { setDecisionRecorded(false); setReviewIndex(prev => (prev + 1) % Math.max(1, items.length)); }}>
-                    Proceed to Next Item ➔
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            );
+          })()}
 
           {/* MOCKUP 9: ADMIN ASSIGNMENTS */}
           {currentView === 'assignments' && (
@@ -1466,7 +1503,7 @@ export default function App() {
                         <span className={`badge-status ${item.interest_level === 'interested' ? 'badge-released' : 'badge-draft'}`} style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}>
                           {item.interest_level === 'interested' ? '❤️ Marked Interested' : '🚫 Pass'}
                         </span>
-                        <button className="btn-outline" style={{ fontSize: '0.8rem', padding: '0.35rem 0.7rem' }} onClick={() => { setSelectedItem(item); setCurrentView('review'); }}>
+                        <button className="btn-outline" style={{ fontSize: '0.8rem', padding: '0.35rem 0.7rem' }} onClick={() => { const idx = items.findIndex(i => i.id === item.id); if (idx !== -1) setReviewIndex(idx); setActiveReviewPhotoIdx(0); setSelectedItem(item); setCurrentView('review'); }}>
                           Change Decision ➔
                         </button>
                       </div>

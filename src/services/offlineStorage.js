@@ -36,10 +36,11 @@ export const offlineStorage = {
 
     const record = {
       id: 'staged_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-      title: itemData.title || 'Untitled Item',
-      locationInHouse: itemData.locationInHouse || 'House',
+      title: itemData.title || '',
+      locationInHouse: itemData.locationInHouse || '',
       categoryId: itemData.categoryId || '',
       notes: itemData.notes || '',
+      value: itemData.value || '',
       createdAt: new Date().toISOString(),
       photos: photoBlobs
     };

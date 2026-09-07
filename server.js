@@ -106,6 +106,7 @@ async function initDatabase() {
       weight TEXT,
       special_handling_notes TEXT,
       description TEXT,
+      value TEXT,
       status TEXT DEFAULT 'draft',
       is_high_value INTEGER DEFAULT 0,
       release_batch_id TEXT,
@@ -174,6 +175,9 @@ async function initDatabase() {
       details TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+
+    // Ensure 'value' column exists on items table for legacy databases
+    db.run(`ALTER TABLE items ADD COLUMN value TEXT`, () => {});
 
     // Seed Estate
     const estate = await dbGet(`SELECT * FROM estates WHERE id = 'estate_uncle_jim'`);
@@ -437,14 +441,17 @@ app.post('/api/auth/logout', (req, res) => {
 // ----------------------------------------------------
 app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'contributor']), upload.array('photos', 10), async (req, res) => {
   try {
-    const { title, locationInHouse, categoryId } = req.body;
+    const { title, locationInHouse, categoryId, description, notes, value } = req.body;
     const itemId = 'item_' + Date.now();
     const itemNumber = 'UJ-' + Math.floor(100 + Math.random() * 900);
-    const itemTitle = title?.trim() || `Inventory Item #${itemNumber}`;
+    const itemTitle = (title !== undefined && title !== null) ? title.trim() : '';
+    const itemLocation = (locationInHouse !== undefined && locationInHouse !== null) ? locationInHouse.trim() : '';
+    const itemDesc = (description || notes || '').trim();
+    const itemValue = (value !== undefined && value !== null) ? value.trim() : '';
 
     await dbRun(
-      `INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, status) VALUES (?, ?, ?, ?, ?, ?, 'draft')`,
-      [itemId, req.user.estate_id, itemNumber, itemTitle, categoryId || null, locationInHouse || 'House Capture']
+      `INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, description, value, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')`,
+      [itemId, req.user.estate_id, itemNumber, itemTitle, categoryId || null, itemLocation || null, itemDesc || null, itemValue || null]
     );
 
     const savedPhotos = [];
@@ -527,6 +534,21 @@ app.get('/api/items', authenticateToken, async (req, res) => {
 
     query += ` ORDER BY i.created_at DESC`;
     const items = await dbAll(query, params);
+
+    if (items.length > 0) {
+      const itemIds = items.map(it => it.id);
+      const placeholders = itemIds.map(() => '?').join(',');
+      const allPhotos = await dbAll(`SELECT * FROM item_photos WHERE item_id IN (${placeholders}) ORDER BY is_primary DESC, display_order ASC`, itemIds);
+      const photosByItem = {};
+      for (const p of allPhotos) {
+        if (!photosByItem[p.item_id]) photosByItem[p.item_id] = [];
+        photosByItem[p.item_id].push(p);
+      }
+      for (const item of items) {
+        item.photos = photosByItem[item.id] || [];
+      }
+    }
+
     res.json(items);
   } catch (err) {
     console.error(err);
@@ -573,7 +595,7 @@ app.get('/api/items/:id', authenticateToken, async (req, res) => {
 
 app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor']), async (req, res) => {
   try {
-    const { title, categoryId, locationInHouse, condition, dimensions, weight, specialHandlingNotes, description, storyText, provenanceSource, isHighValue } = req.body;
+    const { title, categoryId, locationInHouse, condition, dimensions, weight, specialHandlingNotes, description, storyText, provenanceSource, isHighValue, value } = req.body;
     const itemId = req.params.id;
 
     await dbRun(`
@@ -586,9 +608,10 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
           weight = ?,
           special_handling_notes = ?,
           description = ?,
+          value = COALESCE(?, value),
           is_high_value = COALESCE(?, is_high_value)
       WHERE id = ? AND estate_id = ?
-    `, [title, categoryId || null, locationInHouse || null, condition || null, dimensions || null, weight || null, specialHandlingNotes || null, description || null, isHighValue ? 1 : 0, itemId, req.user.estate_id]);
+    `, [title, categoryId || null, locationInHouse || null, condition || null, dimensions || null, weight || null, specialHandlingNotes || null, description || null, value !== undefined ? value : null, isHighValue ? 1 : 0, itemId, req.user.estate_id]);
 
     if (storyText) {
       const existingStory = await dbGet(`SELECT id FROM item_stories WHERE item_id = ?`, [itemId]);
@@ -906,9 +929,9 @@ app.post('/api/items/batch-sync', authenticateToken, upload.array('photos', 20),
       const itemNum = 'E-' + Math.floor(1000 + Math.random() * 9000);
 
       await dbRun(`
-        INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, description, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')
-      `, [itemId, req.user.estate_id, itemNum, itemData.title || 'Staged Item', itemData.categoryId || null, itemData.locationInHouse || 'House', itemData.notes || '']);
+        INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, description, value, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')
+      `, [itemId, req.user.estate_id, itemNum, itemData.title || '', itemData.categoryId || null, itemData.locationInHouse || null, itemData.notes || '', itemData.value || null]);
 
       if (req.files && req.files.length > 0) {
         for (let i = 0; i < req.files.length; i++) {
@@ -984,11 +1007,19 @@ app.post('/api/items/:id/enrich', authenticateToken, requireRole(['admin']), asy
     const { id } = req.params;
     const { title, era, value, notes } = req.body;
     
+    const descParts = [];
+    if (era) descParts.push(`Era: ${era}`);
+    if (notes) descParts.push(notes);
+    const itemDesc = descParts.join(' | ');
+
     await dbRun(`
       UPDATE items
-      SET title = ?, description = ?, status = 'released'
+      SET title = COALESCE(?, title),
+          description = ?,
+          value = COALESCE(?, value),
+          status = 'released'
       WHERE id = ?
-    `, [title || 'Enriched Item', `${era || ''} | ${notes || ''} | Value: ${value || ''}`, id]);
+    `, [title || null, itemDesc || null, value || null, id]);
 
     logAudit(req.user.estate_id, req.user.id, 'ENRICH_ITEM', 'items', id, { title, era, value });
     res.json({ success: true });
