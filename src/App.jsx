@@ -265,6 +265,9 @@ export default function App() {
       setCapturedPhotos(prev => [...prev, ...newPhotos]);
       setCaptureStep('enter_details');
     }
+    // Crucial fix: Reset the input value so subsequent camera captures 
+    // (which often have the same filename like "image.jpg") will trigger onChange again.
+    e.target.value = null;
   };
 
   const handleTriggerCamera = () => {
@@ -836,7 +839,7 @@ export default function App() {
           {currentView === 'capture' && (
             <div className="mobile-frame">
               {/* Hidden File Inputs for Camera and Photo Library */}
-              <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" multiple onChange={handlePhotosSelected} style={{ display: 'none' }} />
+              <input type="file" ref={cameraInputRef} accept="image/*" capture="environment" onChange={handlePhotosSelected} style={{ display: 'none' }} />
               <input type="file" ref={libraryInputRef} accept="image/*" multiple onChange={handlePhotosSelected} style={{ display: 'none' }} />
 
               {/* STEPPER PROGRESS BAR */}
