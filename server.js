@@ -202,7 +202,8 @@ async function initDatabase() {
         ['user_sarah', 'estate_uncle_jim', 'Cousin Sarah', 'sarah@unclejim.estate', defaultPasswordHash, 'contributor', '555-0102', 'Madison, WI'],
         ['user_jean', 'estate_uncle_jim', 'Aunt Jean', 'jean@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0103', 'Manitowish Waters, WI'],
         ['user_tim', 'estate_uncle_jim', 'Tim Robinson', 'tim@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0104', 'Chicago, IL'],
-        ['user_susan', 'estate_uncle_jim', 'Susan Robinson', 'susan@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0105', 'Boston, MA']
+        ['user_susan', 'estate_uncle_jim', 'Susan Robinson', 'susan@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0105', 'Boston, MA'],
+        ['user_museum', 'estate_uncle_jim', 'City Historical Museum', 'museum@unclejim.estate', defaultPasswordHash, 'institution', '555-0109', 'Manitowish Waters, WI']
       ];
       for (const [id, eId, name, email, pass, role, phone, addr] of seedUsers) {
         await dbRun(`INSERT INTO users (id, estate_id, name, email, password_hash, role, phone, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
@@ -874,11 +875,154 @@ app.get('/api/users', authenticateToken, async (req, res) => {
   res.json(users);
 });
 
+// Endpoint: Batch Sync Staged Items Upload from Offline Mode
+app.post('/api/items/batch-sync', authenticateToken, upload.array('photos', 20), async (req, res) => {
+  try {
+    const { items: itemsJson } = req.body;
+    const parsedItems = JSON.parse(itemsJson || '[]');
+    const uploadedResults = [];
+
+    for (let itemData of parsedItems) {
+      const itemId = 'item_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+      const itemNum = 'E-' + Math.floor(1000 + Math.random() * 9000);
+
+      await dbRun(`
+        INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, description, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')
+      `, [itemId, req.user.estate_id, itemNum, itemData.title || 'Staged Item', itemData.categoryId || null, itemData.locationInHouse || 'House', itemData.notes || '']);
+
+      if (req.files && req.files.length > 0) {
+        for (let i = 0; i < req.files.length; i++) {
+          const file = req.files[i];
+          const filename = `photo_${Date.now()}_${i}.webp`;
+          const fullPath = path.join(FULL_UPLOADS_DIR, filename);
+          const thumbPath = path.join(THUMB_UPLOADS_DIR, filename);
+
+          await sharp(file.buffer).resize(1600, 1600, { fit: 'inside', withoutEnlargement: true }).toFile(fullPath);
+          await sharp(file.buffer).resize(400, 400, { fit: 'cover' }).toFile(thumbPath);
+
+          const photoId = 'pho_' + Date.now() + '_' + i;
+          await dbRun(`
+            INSERT INTO item_photos (id, item_id, photo_url, thumbnail_url, is_primary)
+            VALUES (?, ?, ?, ?, ?)
+          `, [photoId, itemId, `/uploads/full/${filename}`, `/uploads/thumbs/${filename}`, i === 0 ? 1 : 0]);
+        }
+      }
+
+      logAudit(req.user.estate_id, req.user.id, 'BATCH_SYNC_UPLOAD', 'items', itemId, { title: itemData.title });
+      uploadedResults.push({ id: itemId, title: itemData.title });
+    }
+
+    res.json({ success: true, count: uploadedResults.length, items: uploadedResults });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to process batch sync upload" });
+  }
+});
+
+// Endpoint: My Interested Items Report for Standard Users
+app.get('/api/reports/my-interests', authenticateToken, async (req, res) => {
+  try {
+    const interests = await dbAll(`
+      SELECT i.id, i.title, i.category_id, i.location_in_house, i.description, int.interest_level, int.comment, int.created_at as marked_at,
+             (SELECT photo_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC LIMIT 1) as primary_photo
+      FROM interests int
+      JOIN items i ON int.item_id = i.id
+      WHERE int.user_id = ?
+      ORDER BY int.created_at DESC
+    `, [req.user.id]);
+    res.json(interests);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to load interest report" });
+  }
+});
+
+// Endpoint: Institution Questions / Inquiries
+app.post('/api/items/inquiry', authenticateToken, async (req, res) => {
+  try {
+    const { itemId, question } = req.body;
+    const inqId = 'inq_' + Date.now();
+    await dbRun(`
+      INSERT INTO institution_inquiries (id, item_id, user_id, question)
+      VALUES (?, ?, ?, ?)
+    `, [inqId, itemId || 'general', req.user.id, question]);
+
+    logAudit(req.user.estate_id, req.user.id, 'INSTITUTION_INQUIRY', 'items', itemId, { question });
+    res.json({ success: true, inquiryId: inqId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to submit inquiry" });
+  }
+});
+// -----------------------------------------------------------------------------
+// STRICT CODE RULE: NO FAKE DATA / NO HALLUCINATED COMPARABLES
+// All item enrichments must reflect verified user input or live web queries.
+// -----------------------------------------------------------------------------
+// Endpoint: AI Workbench Record Enrichment & Release
+app.post('/api/items/:id/enrich', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, era, value, notes } = req.body;
+    
+    await dbRun(`
+      UPDATE items
+      SET title = ?, description = ?, status = 'released'
+      WHERE id = ?
+    `, [title || 'Enriched Item', `${era || ''} | ${notes || ''} | Value: ${value || ''}`, id]);
+
+    logAudit(req.user.estate_id, req.user.id, 'ENRICH_ITEM', 'items', id, { title, era, value });
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to enrich item" });
+  }
+});
+
+// Endpoint: Admin Delete Single Item
+app.delete('/api/items/:id', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    await dbRun(`DELETE FROM item_photos WHERE item_id = ?`, [id]);
+    await dbRun(`DELETE FROM item_stories WHERE item_id = ?`, [id]);
+    await dbRun(`DELETE FROM interests WHERE item_id = ?`, [id]);
+    await dbRun(`DELETE FROM assignments WHERE item_id = ?`, [id]);
+    await dbRun(`DELETE FROM fulfillments WHERE item_id = ?`, [id]);
+    await dbRun(`DELETE FROM items WHERE id = ?`, [id]);
+
+    logAudit(req.user.estate_id, req.user.id, 'DELETE_ITEM', 'items', id, { message: 'Deleted single item' });
+    res.json({ success: true, message: "Item deleted." });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to delete item" });
+  }
+});
+
+// Endpoint: Admin Clear All Inventory Data
+app.post('/api/admin/clear-inventory', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const eId = req.user.estate_id;
+    await dbRun(`DELETE FROM item_photos WHERE item_id IN (SELECT id FROM items WHERE estate_id = ?)`, [eId]);
+    await dbRun(`DELETE FROM item_stories WHERE item_id IN (SELECT id FROM items WHERE estate_id = ?)`, [eId]);
+    await dbRun(`DELETE FROM interests WHERE item_id IN (SELECT id FROM items WHERE estate_id = ?)`, [eId]);
+    await dbRun(`DELETE FROM assignments WHERE item_id IN (SELECT id FROM items WHERE estate_id = ?)`, [eId]);
+    await dbRun(`DELETE FROM fulfillments WHERE item_id IN (SELECT id FROM items WHERE estate_id = ?)`, [eId]);
+    await dbRun(`DELETE FROM items WHERE estate_id = ?`, [eId]);
+    await dbRun(`DELETE FROM audit_logs WHERE estate_id = ?`, [eId]);
+
+    logAudit(eId, req.user.id, 'CLEAR_INVENTORY', 'estates', eId, { message: 'Cleared all inventory data for estate' });
+    res.json({ success: true, message: "Cleared all inventory items." });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to clear inventory data" });
+  }
+});
+
 // Fallback to index.html for SPA routes
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`Uncle Jim's Estate server running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Uncle Jim's Estate server running on http://0.0.0.0:${PORT}`);
 });
