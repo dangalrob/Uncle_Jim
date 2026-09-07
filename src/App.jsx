@@ -4,7 +4,8 @@ import {
   BookOpen, CheckSquare, Truck, UserCheck, History, BarChart2, Settings, 
   Search, Filter, Heart, ArrowLeft, ArrowRight, CheckCircle2, Camera, 
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
-  Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff
+  Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff,
+  Edit3, Plus
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import AdminWorkbench from './components/AdminWorkbench';
@@ -23,6 +24,23 @@ export default function App() {
   const [itemValue, setItemValue] = useState('');
   const [itemNotes, setItemNotes] = useState('');
   const [activeReviewPhotoIdx, setActiveReviewPhotoIdx] = useState(0);
+
+  // Admin Item Edit Modal State
+  const [adminEditingItem, setAdminEditingItem] = useState(null);
+  const [editFormTitle, setEditFormTitle] = useState('');
+  const [editFormCategory, setEditFormCategory] = useState('');
+  const [editFormValue, setEditFormValue] = useState('');
+  const [editFormLocation, setEditFormLocation] = useState('');
+  const [editFormCondition, setEditFormCondition] = useState('');
+  const [editFormDimensions, setEditFormDimensions] = useState('');
+  const [editFormWeight, setEditFormWeight] = useState('');
+  const [editFormStatus, setEditFormStatus] = useState('draft');
+  const [editFormDescription, setEditFormDescription] = useState('');
+  const [editFormStory, setEditFormStory] = useState('');
+  const [editFormPhotos, setEditFormPhotos] = useState([]);
+  const [isSavingItemEdits, setIsSavingItemEdits] = useState(false);
+  const [isUploadingEditPhotos, setIsUploadingEditPhotos] = useState(false);
+  const editPhotoInputRef = useRef(null);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -364,6 +382,135 @@ export default function App() {
       reader.onerror = () => resolve(file);
       reader.readAsDataURL(file);
     });
+  };
+
+  const handleStartEditItem = async (item) => {
+    if (!item) return;
+    setAdminEditingItem(item);
+    setEditFormTitle(item.title || '');
+    setEditFormCategory(item.category_id || (item.category_name ? categories.find(c => c.name === item.category_name)?.id : '') || '');
+    setEditFormValue(item.value || '');
+    setEditFormLocation(item.location_in_house || item.location || '');
+    setEditFormCondition(item.condition || '');
+    setEditFormDimensions(item.dimensions || '');
+    setEditFormWeight(item.weight || '');
+    setEditFormStatus(item.status || 'draft');
+    setEditFormDescription(item.description || item.special_handling_notes || '');
+    setEditFormStory(item.story || item.story_text || '');
+    setEditFormPhotos(item.photos || (item.primary_photo ? [{ id: 'prim', photo_url: item.primary_photo, thumbnail_url: item.primary_thumb || item.primary_photo, is_primary: 1 }] : []));
+
+    try {
+      const res = await fetch(`/api/items/${item.id}`);
+      if (res.ok) {
+        const fullItem = await res.json();
+        setAdminEditingItem(fullItem);
+        setEditFormTitle(fullItem.title || '');
+        setEditFormCategory(fullItem.category_id || (fullItem.category_name ? categories.find(c => c.name === fullItem.category_name)?.id : '') || '');
+        setEditFormValue(fullItem.value || '');
+        setEditFormLocation(fullItem.location_in_house || fullItem.location || '');
+        setEditFormCondition(fullItem.condition || '');
+        setEditFormDimensions(fullItem.dimensions || '');
+        setEditFormWeight(fullItem.weight || '');
+        setEditFormStatus(fullItem.status || 'draft');
+        setEditFormDescription(fullItem.description || fullItem.special_handling_notes || '');
+        const story = fullItem.stories && fullItem.stories.length > 0 ? fullItem.stories[0].story_text : (fullItem.story || '');
+        setEditFormStory(story || '');
+        setEditFormPhotos(fullItem.photos || []);
+      }
+    } catch (err) {
+      console.error("Failed to load full item for editing:", err);
+    }
+  };
+
+  const handleSaveItemEdits = async () => {
+    if (!adminEditingItem) return;
+    setIsSavingItemEdits(true);
+    try {
+      const payload = {
+        title: editFormTitle,
+        categoryId: editFormCategory || null,
+        value: editFormValue,
+        locationInHouse: editFormLocation,
+        location: editFormLocation,
+        condition: editFormCondition,
+        dimensions: editFormDimensions,
+        weight: editFormWeight,
+        status: editFormStatus,
+        description: editFormDescription,
+        storyText: editFormStory
+      };
+
+      const res = await fetch(`/api/items/${adminEditingItem.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        setAdminEditingItem(null);
+        await fetchItems();
+        await fetchDashboardStats();
+      } else {
+        alert("Failed to save item changes.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error saving item changes.");
+    } finally {
+      setIsSavingItemEdits(false);
+    }
+  };
+
+  const handleAddPhotosToEditItem = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0 || !adminEditingItem) return;
+    setIsUploadingEditPhotos(true);
+    try {
+      const formData = new FormData();
+      for (const file of files) {
+        const compFile = await compressPhotoTo2048(file);
+        formData.append('photos', compFile);
+      }
+
+      const res = await fetch(`/api/items/${adminEditingItem.id}/photos`, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setEditFormPhotos(data.photos || []);
+        await fetchItems();
+      } else {
+        alert("Failed to upload new photos.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error uploading photos.");
+    } finally {
+      setIsUploadingEditPhotos(false);
+      e.target.value = null;
+    }
+  };
+
+  const handleDeletePhotoFromEditItem = async (photoId) => {
+    if (!adminEditingItem) return;
+    if (!window.confirm("Are you sure you want to delete this photo from the item?")) return;
+    try {
+      const res = await fetch(`/api/items/${adminEditingItem.id}/photos/${photoId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEditFormPhotos(data.photos || []);
+        await fetchItems();
+      } else {
+        alert("Failed to delete photo.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error deleting photo.");
+    }
   };
 
   const handleSaveItemCapture = async () => {
@@ -1090,7 +1237,22 @@ export default function App() {
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1.25rem' }}>
                   {items.map(item => (
-                    <div key={item.id} className="card" style={{ padding: '0.85rem', cursor: 'pointer', position: 'relative' }} onClick={() => { const idx = items.findIndex(i => i.id === item.id); if (idx !== -1) setReviewIndex(idx); setActiveReviewPhotoIdx(0); setSelectedItem(item); setCurrentView('review'); }}>
+                    <div
+                      key={item.id}
+                      className="card"
+                      style={{ padding: '0.85rem', cursor: 'pointer', position: 'relative' }}
+                      onClick={() => {
+                        if (currentUser?.role === 'admin') {
+                          handleStartEditItem(item);
+                        } else {
+                          const idx = items.findIndex(i => i.id === item.id);
+                          if (idx !== -1) setReviewIndex(idx);
+                          setActiveReviewPhotoIdx(0);
+                          setSelectedItem(item);
+                          setCurrentView('review');
+                        }
+                      }}
+                    >
                       <div style={{ position: 'relative' }}>
                         <img src={item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'} style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }} alt={item.title || "Estate Item"} />
                         <Heart size={18} color="#d32f2f" style={{ position: 'absolute', bottom: '12px', right: '12px', background: '#fff', borderRadius: '50%', padding: '3px' }} />
@@ -1113,6 +1275,19 @@ export default function App() {
                           </span>
                         )}
                       </div>
+
+                      {currentUser?.role === 'admin' && (
+                        <button
+                          className="btn-outline"
+                          style={{ fontSize: '0.8rem', padding: '0.4rem 0.6rem', marginTop: '0.65rem', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem', color: 'var(--pine-primary)', borderColor: 'var(--pine-primary)' }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleStartEditItem(item);
+                          }}
+                        >
+                          <Edit3 size={14} /> Edit Item & Pictures
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1133,9 +1308,19 @@ export default function App() {
                 <div className="review-top-bar">
                   <button className="btn-outline" onClick={() => setCurrentView('catalog')}><ArrowLeft size={16} /> Back to Browse</button>
                   <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>Item {(reviewIndex % Math.max(1, items.length)) + 1} of {items.length || 1}</span>
-                  <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    {currentUser?.role === 'admin' && currentReviewItem && (
+                      <button
+                        className="btn-outline"
+                        style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem', color: 'var(--pine-primary)', borderColor: 'var(--pine-primary)', display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 'bold' }}
+                        onClick={() => handleStartEditItem(currentReviewItem)}
+                        title="Edit this item and its pictures"
+                      >
+                        <Edit3 size={15} /> Edit Item & Pictures
+                      </button>
+                    )}
                     <button className="btn-outline" style={{ padding: '0.4rem 0.6rem' }} onClick={() => { setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev - 1 + Math.max(1, items.length)) % Math.max(1, items.length)); }} title="Previous Item"><ArrowLeft size={16} /></button>
-                    <button className="btn-outline" style={{ padding: '0.4rem 0.6rem', marginLeft: '4px' }} onClick={() => { setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev + 1) % Math.max(1, items.length)); }} title="Next Item"><ArrowRight size={16} /></button>
+                    <button className="btn-outline" style={{ padding: '0.4rem 0.6rem' }} onClick={() => { setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev + 1) % Math.max(1, items.length)); }} title="Next Item"><ArrowRight size={16} /></button>
                   </div>
                 </div>
 
@@ -1647,6 +1832,239 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {/* Admin Item & Pictures Edit Modal */}
+      {adminEditingItem && (
+        <div className="modal-overlay" onClick={() => setAdminEditingItem(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--pine-deep)' }}>
+                  Edit Item: {adminEditingItem.title}
+                </h3>
+                <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Update item details, manage photos, and save changes.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setAdminEditingItem(null)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body">
+              {/* Photo Management Section */}
+              <div style={{ marginBottom: '1.5rem', background: '#fcfbf7', border: '1px solid #ebd8be', padding: '1rem', borderRadius: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                  <div>
+                    <strong style={{ fontSize: '0.95rem', color: 'var(--pine-deep)' }}>Photos ({editFormPhotos.length})</strong>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
+                      Add or delete item pictures
+                    </span>
+                  </div>
+                  <div>
+                    <input
+                      type="file"
+                      ref={editPhotoInputRef}
+                      multiple
+                      accept="image/*"
+                      style={{ display: 'none' }}
+                      onChange={handleAddPhotosToEditItem}
+                    />
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ padding: '0.4rem 0.75rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                      disabled={isUploadingEditPhotos}
+                      onClick={() => editPhotoInputRef.current && editPhotoInputRef.current.click()}
+                    >
+                      <Plus size={15} />
+                      {isUploadingEditPhotos ? 'Uploading...' : 'Add Pictures'}
+                    </button>
+                  </div>
+                </div>
+
+                {editFormPhotos.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
+                    <ImageOff size={28} style={{ opacity: 0.4, marginBottom: '0.35rem' }} />
+                    <div>No photos uploaded for this item yet.</div>
+                  </div>
+                ) : (
+                  <div className="edit-photos-grid">
+                    {editFormPhotos.map((photo) => (
+                      <div key={photo.id} className="edit-photo-card">
+                        <img
+                          src={photo.thumbnail_url || photo.url}
+                          alt="Item photo"
+                        />
+                        {Boolean(photo.is_primary) && (
+                          <span className="edit-photo-primary-badge">Primary</span>
+                        )}
+                        <button
+                          type="button"
+                          className="edit-photo-delete-btn"
+                          title="Delete photo"
+                          onClick={() => handleDeletePhotoFromEditItem(photo.id)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Editable Fields */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem' }}>
+                <div className="form-group">
+                  <label>Title *</label>
+                  <input
+                    type="text"
+                    value={editFormTitle}
+                    onChange={(e) => setEditFormTitle(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Category</label>
+                  <select
+                    value={editFormCategory}
+                    onChange={(e) => setEditFormCategory(e.target.value)}
+                  >
+                    <option value="">-- Select Category --</option>
+                    {categories.length > 0 ? (
+                      categories.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="Furniture">Furniture</option>
+                        <option value="Decor">Decor</option>
+                        <option value="Electronics">Electronics</option>
+                        <option value="Kitchen">Kitchen</option>
+                        <option value="Books">Books</option>
+                        <option value="Tools">Tools</option>
+                        <option value="Jewelry">Jewelry</option>
+                        <option value="Collectibles">Collectibles</option>
+                        <option value="Other">Other</option>
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label>Estimated Value</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. $450"
+                    value={editFormValue}
+                    onChange={(e) => setEditFormValue(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Current Status</label>
+                  <select
+                    value={editFormStatus}
+                    onChange={(e) => setEditFormStatus(e.target.value)}
+                  >
+                    <option value="Available">Available</option>
+                    <option value="Under Review">Under Review</option>
+                    <option value="Claimed">Claimed</option>
+                    <option value="Reserved">Reserved</option>
+                    <option value="Sold">Sold</option>
+                    <option value="Donated">Donated</option>
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label>Location in Estate</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Living Room, Attic"
+                    value={editFormLocation}
+                    onChange={(e) => setEditFormLocation(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Condition</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Excellent, Minor wear"
+                    value={editFormCondition}
+                    onChange={(e) => setEditFormCondition(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Dimensions</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 36W x 24D x 48H"
+                    value={editFormDimensions}
+                    onChange={(e) => setEditFormDimensions(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Weight</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 25 lbs"
+                    value={editFormWeight}
+                    onChange={(e) => setEditFormWeight(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="form-group" style={{ marginTop: '0.85rem' }}>
+                <label>Description & Notes</label>
+                <textarea
+                  rows={3}
+                  value={editFormDescription}
+                  onChange={(e) => setEditFormDescription(e.target.value)}
+                  placeholder="General description, provenance notes, details..."
+                />
+              </div>
+
+              <div className="form-group" style={{ marginTop: '0.85rem' }}>
+                <label>Family Story / History</label>
+                <textarea
+                  rows={3}
+                  value={editFormStory}
+                  onChange={(e) => setEditFormStory(e.target.value)}
+                  placeholder="Memories, who gave this to Jim, historical significance..."
+                />
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setAdminEditingItem(null)}
+                disabled={isSavingItemEdits}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleSaveItemEdits}
+                disabled={isSavingItemEdits}
+              >
+                {isSavingItemEdits ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

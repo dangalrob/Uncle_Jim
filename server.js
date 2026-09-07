@@ -595,29 +595,46 @@ app.get('/api/items/:id', authenticateToken, async (req, res) => {
 
 app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor']), async (req, res) => {
   try {
-    const { title, categoryId, locationInHouse, condition, dimensions, weight, specialHandlingNotes, description, storyText, provenanceSource, isHighValue, value } = req.body;
+    const { title, categoryId, locationInHouse, location, condition, dimensions, weight, specialHandlingNotes, notes, description, storyText, provenanceSource, isHighValue, value, status } = req.body;
     const itemId = req.params.id;
+    const finalLocation = locationInHouse !== undefined ? locationInHouse : location;
+    const finalNotes = specialHandlingNotes !== undefined ? specialHandlingNotes : notes;
 
     await dbRun(`
       UPDATE items
       SET title = COALESCE(?, title),
-          category_id = ?,
-          location_in_house = ?,
-          condition = ?,
-          dimensions = ?,
-          weight = ?,
-          special_handling_notes = ?,
-          description = ?,
+          category_id = COALESCE(?, category_id),
+          location_in_house = COALESCE(?, location_in_house),
+          condition = COALESCE(?, condition),
+          dimensions = COALESCE(?, dimensions),
+          weight = COALESCE(?, weight),
+          special_handling_notes = COALESCE(?, special_handling_notes),
+          description = COALESCE(?, description),
           value = COALESCE(?, value),
+          status = COALESCE(?, status),
           is_high_value = COALESCE(?, is_high_value)
       WHERE id = ? AND estate_id = ?
-    `, [title, categoryId || null, locationInHouse || null, condition || null, dimensions || null, weight || null, specialHandlingNotes || null, description || null, value !== undefined ? value : null, isHighValue ? 1 : 0, itemId, req.user.estate_id]);
+    `, [
+      title !== undefined ? title : null,
+      categoryId !== undefined ? categoryId : null,
+      finalLocation !== undefined ? finalLocation : null,
+      condition !== undefined ? condition : null,
+      dimensions !== undefined ? dimensions : null,
+      weight !== undefined ? weight : null,
+      finalNotes !== undefined ? finalNotes : null,
+      description !== undefined ? description : null,
+      value !== undefined ? value : null,
+      status !== undefined ? status : null,
+      isHighValue !== undefined ? (isHighValue ? 1 : 0) : null,
+      itemId,
+      req.user.estate_id
+    ]);
 
-    if (storyText) {
+    if (storyText !== undefined) {
       const existingStory = await dbGet(`SELECT id FROM item_stories WHERE item_id = ?`, [itemId]);
       if (existingStory) {
-        await dbRun(`UPDATE item_stories SET story_text = ?, provenance_source = ? WHERE id = ?`, [storyText, provenanceSource || null, existingStory.id]);
-      } else {
+        await dbRun(`UPDATE item_stories SET story_text = ?, provenance_source = ? WHERE id = ?`, [storyText || '', provenanceSource || null, existingStory.id]);
+      } else if (storyText) {
         await dbRun(`INSERT INTO item_stories (id, item_id, story_text, provenance_source) VALUES (?, ?, ?, ?)`, ['story_' + Date.now(), itemId, storyText, provenanceSource || null]);
       }
     }
@@ -628,6 +645,87 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to update item" });
+  }
+});
+
+// Endpoint: Upload / Add Photos to an Existing Item
+app.post('/api/items/:id/photos', authenticateToken, requireRole(['admin', 'contributor']), upload.array('photos', 10), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const item = await dbGet(`SELECT id FROM items WHERE id = ? AND estate_id = ?`, [itemId, req.user.estate_id]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: "No photos uploaded" });
+    }
+
+    const photoCountRow = await dbGet(`SELECT COUNT(*) as count FROM item_photos WHERE item_id = ?`, [itemId]);
+    let currentCount = photoCountRow?.count || 0;
+
+    const savedPhotos = [];
+    for (let i = 0; i < req.files.length; i++) {
+      const file = req.files[i];
+      const thumbFilename = 'thumb-' + file.filename.replace(/\.[^/.]+$/, "") + '.webp';
+      const thumbPath = path.join(THUMB_UPLOADS_DIR, thumbFilename);
+
+      await sharp(file.path)
+        .resize(400, 300, { fit: 'cover' })
+        .toFormat('webp', { quality: 80 })
+        .toFile(thumbPath);
+
+      const photoUrl = `/uploads/full/${file.filename}`;
+      const thumbnailUrl = `/uploads/thumbs/${thumbFilename}`;
+      const photoId = 'photo_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substring(2, 6);
+      const isPrimary = (currentCount === 0 && i === 0) ? 1 : 0;
+      const displayOrder = currentCount + i;
+
+      await dbRun(
+        `INSERT INTO item_photos (id, item_id, photo_url, thumbnail_url, is_primary, display_order) VALUES (?, ?, ?, ?, ?, ?)`,
+        [photoId, itemId, photoUrl, thumbnailUrl, isPrimary, displayOrder]
+      );
+
+      savedPhotos.push({ id: photoId, item_id: itemId, photo_url: photoUrl, thumbnail_url: thumbnailUrl, is_primary: isPrimary, display_order: displayOrder });
+    }
+
+    const allPhotos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId]);
+
+    logAudit(req.user.estate_id, req.user.id, 'ADD_ITEM_PHOTOS', 'items', itemId, { addedCount: savedPhotos.length });
+
+    res.json({ success: true, added: savedPhotos, photos: allPhotos });
+  } catch (err) {
+    console.error("Failed to add photos to item:", err);
+    res.status(500).json({ error: "Failed to upload photos" });
+  }
+});
+
+// Endpoint: Delete a Photo from an Item
+app.delete('/api/items/:id/photos/:photoId', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id: itemId, photoId } = req.params;
+    const item = await dbGet(`SELECT id FROM items WHERE id = ? AND estate_id = ?`, [itemId, req.user.estate_id]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const photo = await dbGet(`SELECT * FROM item_photos WHERE id = ? AND item_id = ?`, [photoId, itemId]);
+    if (!photo) return res.status(404).json({ error: "Photo not found" });
+
+    await dbRun(`DELETE FROM item_photos WHERE id = ? AND item_id = ?`, [photoId, itemId]);
+
+    // If the deleted photo was primary, promote the next photo to primary
+    if (photo.is_primary === 1) {
+      const remainingPhoto = await dbGet(`SELECT id FROM item_photos WHERE item_id = ? ORDER BY display_order ASC LIMIT 1`, [itemId]);
+      if (remainingPhoto) {
+        await dbRun(`UPDATE item_photos SET is_primary = 1 WHERE id = ?`, [remainingPhoto.id]);
+      }
+    }
+
+    const allPhotos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId]);
+
+    logAudit(req.user.estate_id, req.user.id, 'DELETE_ITEM_PHOTO', 'item_photos', photoId, { itemId });
+
+    res.json({ success: true, photos: allPhotos });
+  } catch (err) {
+    console.error("Failed to delete photo:", err);
+    res.status(500).json({ error: "Failed to delete photo" });
   }
 });
 
