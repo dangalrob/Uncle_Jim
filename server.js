@@ -18,8 +18,9 @@ const JWT_SECRET = process.env.JWT_SECRET || 'uncle_jims_estate_secret_key_2026'
 const PORT = process.env.PORT || 3001;
 
 // Ensure storage directories exist
-const DATA_DIR = path.join(__dirname, 'data');
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const STORAGE_ROOT = process.env.STORAGE_ROOT || __dirname;
+const DATA_DIR = path.join(STORAGE_ROOT, 'data');
+const UPLOADS_DIR = path.join(STORAGE_ROOT, 'uploads');
 const FULL_UPLOADS_DIR = path.join(UPLOADS_DIR, 'full');
 const THUMB_UPLOADS_DIR = path.join(UPLOADS_DIR, 'thumbs');
 
