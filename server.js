@@ -18,7 +18,16 @@ const JWT_SECRET = process.env.JWT_SECRET || 'uncle_jims_estate_secret_key_2026'
 const PORT = process.env.PORT || 3001;
 
 // Ensure storage directories exist
-const STORAGE_ROOT = process.env.STORAGE_ROOT || __dirname;
+let STORAGE_ROOT = process.env.STORAGE_ROOT;
+if (!STORAGE_ROOT) {
+  // Auto-detect Render persistent disk if the user forgot to set the Env Var
+  if (fs.existsSync('/opt/render/project/src/uploads') && process.env.RENDER) {
+    STORAGE_ROOT = '/opt/render/project/src/uploads';
+  } else {
+    STORAGE_ROOT = __dirname;
+  }
+}
+
 const DATA_DIR = path.join(STORAGE_ROOT, 'data');
 const UPLOADS_DIR = path.join(STORAGE_ROOT, 'uploads');
 const FULL_UPLOADS_DIR = path.join(UPLOADS_DIR, 'full');
