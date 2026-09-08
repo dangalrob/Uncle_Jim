@@ -1010,13 +1010,13 @@ export default function App() {
 
               {/* STEP 3A: TAKE OR SELECT A PHOTO */}
               {captureStep === 'take_photo' && (
-                <div className="camera-screen-dark" style={{ padding: '1.25rem' }}>
-                  <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                    <button className="btn-outline" style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.15)', fontSize: '0.9rem', padding: '0.4rem 0.8rem' }} onClick={handleNavigateHome}>
-                      ← Return to Main Menu
+                <div className="camera-screen-dark" style={{ padding: '1rem' }}>
+                  <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', gap: '0.5rem' }}>
+                    <button className="btn-outline" style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.15)', fontSize: '0.85rem', padding: '0.35rem 0.7rem' }} onClick={handleNavigateHome}>
+                      ← Return Home
                     </button>
-                    <span style={{ fontSize: '1.05rem', fontWeight: 'bold' }}>Add New Item</span>
-                    <div style={{ width: '40px' }}></div>
+                    <span style={{ fontSize: '1.05rem', fontWeight: 'bold', color: '#ffffff' }}>Add New Item</span>
+                    <div style={{ width: '10px' }}></div>
                   </div>
 
                   <label className="viewfinder-box" style={{ cursor: 'pointer', background: '#14241c', border: '2px dashed var(--gold-accent)', borderRadius: '16px', padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '220px', width: '100%', margin: 0 }}>
@@ -1056,12 +1056,12 @@ export default function App() {
 
               {/* STEP 3B: ADD MORE PHOTOS OR PROCEED */}
               {captureStep === 'add_more' && (
-                <div style={{ padding: '1.25rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', fontWeight: 'bold', fontSize: '1rem' }}>
-                    <button className="btn-outline" style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }} onClick={handleNavigateHome}>
-                      ← Return to Main Menu
+                <div style={{ padding: '1rem 1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+                    <button className="btn-outline" style={{ fontSize: '0.88rem', padding: '0.4rem 0.75rem', minHeight: '40px' }} onClick={handleNavigateHome}>
+                      ← Return Home
                     </button>
-                    <span style={{ color: 'var(--pine-primary)', fontWeight: 'bold' }}>{capturedPhotos.length} Photo(s) Selected</span>
+                    <span style={{ color: 'var(--pine-primary)', fontWeight: 'bold', fontSize: '0.95rem' }}>{capturedPhotos.length} Photo(s) Selected</span>
                   </div>
 
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1.25rem' }}>
@@ -1101,56 +1101,58 @@ export default function App() {
 
               {/* STEP 3C: ENTER BASIC DETAILS */}
               {captureStep === 'enter_details' && (
-                <div style={{ padding: '1.25rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', fontWeight: 'bold', fontSize: '1.1rem' }}>
-                    <button className="btn-outline" style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem' }} onClick={() => setCaptureStep('add_more')}>
+                <div style={{ padding: '1rem 1.25rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
+                    <button className="btn-outline" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem', minHeight: '38px' }} onClick={() => setCaptureStep('add_more')}>
                       ← Back to Photos
                     </button>
-                    <span>New Item Details</span>
-                    <button className="btn-outline" style={{ fontSize: '0.8rem', padding: '0.25rem 0.6rem' }} onClick={handleNavigateHome}>
+                    <button className="btn-outline" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem', minHeight: '38px' }} onClick={handleNavigateHome}>
                       Cancel
                     </button>
                   </div>
+                  <h2 style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--pine-deep)', marginBottom: '1rem' }}>
+                    New Item Details
+                  </h2>
 
-                  <div style={{ position: 'relative', marginBottom: '1rem' }}>
-                    <img src={capturedPhotos[0]?.url || OFFLINE_THUMB} style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '8px' }} />
-                    <button style={{ position: 'absolute', bottom: '8px', right: '8px', background: 'rgba(0,0,0,0.75)', color: '#fff', padding: '0.35rem 0.75rem', borderRadius: '6px', fontSize: '0.8rem', border: 'none', cursor: 'pointer', fontWeight: 'bold' }} onClick={handleTriggerLibrary}>
+                  <div style={{ position: 'relative', marginBottom: '1.5rem', borderRadius: '10px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                    <img src={capturedPhotos[0]?.url || OFFLINE_THUMB} style={{ width: '100%', height: '180px', objectFit: 'cover', display: 'block' }} alt="Item Preview" />
+                    <button style={{ position: 'absolute', bottom: '10px', right: '10px', background: 'rgba(20, 36, 28, 0.85)', color: '#fff', padding: '0.45rem 0.85rem', borderRadius: '6px', fontSize: '0.85rem', border: 'none', cursor: 'pointer', fontWeight: 'bold', backdropFilter: 'blur(2px)' }} onClick={handleTriggerLibrary}>
                       🖼️ + Add Photos
                     </button>
                   </div>
 
-                  <div style={{ marginBottom: '0.85rem' }}>
-                    <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Title (optional)</label>
-                    <input type="text" className="senior-input" value={itemTitle} placeholder="" onChange={e=>setItemTitle(e.target.value)} />
+                  <div className="form-field-group">
+                    <label className="form-field-label">Title (optional)</label>
+                    <input type="text" className="form-field-input" value={itemTitle} placeholder="e.g. Vintage Wooden Rocking Chair" onChange={e=>setItemTitle(e.target.value)} />
                   </div>
 
-                  <div style={{ marginBottom: '0.85rem' }}>
-                    <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Category (optional)</label>
-                    <select className="senior-input" value={itemCategory} onChange={e=>setItemCategory(e.target.value)}>
+                  <div className="form-field-group">
+                    <label className="form-field-label">Category (optional)</label>
+                    <select className="form-field-select" value={itemCategory} onChange={e=>setItemCategory(e.target.value)}>
                       <option value="">-- Select Category (Optional) --</option>
                       {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
 
-                  <div style={{ marginBottom: '0.85rem' }}>
-                    <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Value (optional)</label>
-                    <input type="text" className="senior-input" value={itemValue} placeholder="" onChange={e=>setItemValue(e.target.value)} />
+                  <div className="form-field-group">
+                    <label className="form-field-label">Estimated Value (optional)</label>
+                    <input type="text" className="form-field-input" value={itemValue} placeholder="e.g. $450" onChange={e=>setItemValue(e.target.value)} />
                   </div>
 
-                  <div style={{ marginBottom: '0.85rem' }}>
-                    <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Quick Notes (optional)</label>
-                    <textarea className="senior-input" rows="2" value={itemNotes} placeholder="" onChange={e=>setItemNotes(e.target.value)}></textarea>
+                  <div className="form-field-group">
+                    <label className="form-field-label">Quick Notes (optional)</label>
+                    <textarea className="form-field-textarea" rows="3" value={itemNotes} placeholder="General description, details, provenance notes..." onChange={e=>setItemNotes(e.target.value)}></textarea>
                   </div>
 
-                  <div style={{ marginBottom: '1.25rem' }}>
-                    <label style={{ fontSize: '0.85rem', fontWeight: 'bold', display: 'block', marginBottom: '0.3rem' }}>Location in House (optional)</label>
-                    <input type="text" className="senior-input" value={itemLocation} placeholder="" onChange={e=>setItemLocation(e.target.value)} />
+                  <div className="form-field-group">
+                    <label className="form-field-label">Location in House (optional)</label>
+                    <input type="text" className="form-field-input" value={itemLocation} placeholder="e.g. Living Room, Attic, Master Bedroom" onChange={e=>setItemLocation(e.target.value)} />
                   </div>
 
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', marginTop: '1.5rem' }}>
                     <button
-                      className="btn-green-senior"
-                      style={{ width: '100%', minHeight: '56px', background: isSavingItem ? '#e69c24' : 'var(--pine-primary)' }}
+                      className="btn-modal-primary"
+                      style={{ width: '100%', minHeight: '52px', fontSize: '1.05rem', background: isSavingItem ? '#e69c24' : 'var(--pine-primary)' }}
                       onClick={handleSaveItemCapture}
                       disabled={isSavingItem}
                     >
@@ -1160,12 +1162,12 @@ export default function App() {
                           <span>⏳ Saving & Compressing Photos...</span>
                         </div>
                       ) : (
-                        <span>💾 SAVE ITEM TO INVENTORY</span>
+                        <span>💾 Save Item to Inventory</span>
                       )}
                     </button>
 
-                    <button className="btn-outline" style={{ width: '100%', minHeight: '48px', justifyContent: 'center', fontSize: '0.92rem', fontWeight: 'bold' }} onClick={handleNavigateHome}>
-                      🏠 Cancel & Return to Main Dashboard
+                    <button className="btn-modal-secondary" style={{ width: '100%', minHeight: '48px', justifyContent: 'center' }} onClick={handleNavigateHome}>
+                      Cancel & Return to Dashboard
                     </button>
                   </div>
                 </div>
@@ -1858,11 +1860,11 @@ export default function App() {
 
             <div className="modal-body">
               {/* Photo Management Section */}
-              <div style={{ marginBottom: '1.5rem', background: '#fcfbf7', border: '1px solid #ebd8be', padding: '1rem', borderRadius: '8px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                  <div>
-                    <strong style={{ fontSize: '0.95rem', color: 'var(--pine-deep)' }}>Photos ({editFormPhotos.length})</strong>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: '0.5rem' }}>
+              <div style={{ marginBottom: '1.5rem', background: '#fcfbf7', border: '1px solid #ebd8be', padding: '1rem', borderRadius: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <strong style={{ fontSize: '1rem', color: 'var(--pine-deep)' }}>Photos ({editFormPhotos.length})</strong>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                       Add or delete item pictures
                     </span>
                   </div>
@@ -1877,12 +1879,12 @@ export default function App() {
                     />
                     <button
                       type="button"
-                      className="btn-secondary"
-                      style={{ padding: '0.4rem 0.75rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                      className="btn-modal-secondary"
+                      style={{ minHeight: '40px', height: '40px', padding: '0 0.85rem', fontSize: '0.88rem', display: 'flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
                       disabled={isUploadingEditPhotos}
                       onClick={() => editPhotoInputRef.current && editPhotoInputRef.current.click()}
                     >
-                      <Plus size={15} />
+                      <Plus size={16} />
                       {isUploadingEditPhotos ? 'Uploading...' : 'Add Pictures'}
                     </button>
                   </div>
@@ -1919,20 +1921,22 @@ export default function App() {
               </div>
 
               {/* Editable Fields */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem' }}>
-                <div className="form-group">
-                  <label>Title *</label>
+              <div className="edit-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem' }}>
+                <div className="form-field-group">
+                  <label className="form-field-label">Title *</label>
                   <input
                     type="text"
+                    className="form-field-input"
                     value={editFormTitle}
                     onChange={(e) => setEditFormTitle(e.target.value)}
                     required
                   />
                 </div>
 
-                <div className="form-group">
-                  <label>Category</label>
+                <div className="form-field-group">
+                  <label className="form-field-label">Category</label>
                   <select
+                    className="form-field-select"
                     value={editFormCategory}
                     onChange={(e) => setEditFormCategory(e.target.value)}
                   >
@@ -1957,19 +1961,21 @@ export default function App() {
                   </select>
                 </div>
 
-                <div className="form-group">
-                  <label>Estimated Value</label>
+                <div className="form-field-group">
+                  <label className="form-field-label">Estimated Value</label>
                   <input
                     type="text"
+                    className="form-field-input"
                     placeholder="e.g. $450"
                     value={editFormValue}
                     onChange={(e) => setEditFormValue(e.target.value)}
                   />
                 </div>
 
-                <div className="form-group">
-                  <label>Current Status</label>
+                <div className="form-field-group">
+                  <label className="form-field-label">Current Status</label>
                   <select
+                    className="form-field-select"
                     value={editFormStatus}
                     onChange={(e) => setEditFormStatus(e.target.value)}
                   >
@@ -1982,40 +1988,44 @@ export default function App() {
                   </select>
                 </div>
 
-                <div className="form-group">
-                  <label>Location in Estate</label>
+                <div className="form-field-group">
+                  <label className="form-field-label">Location in Estate</label>
                   <input
                     type="text"
+                    className="form-field-input"
                     placeholder="e.g. Living Room, Attic"
                     value={editFormLocation}
                     onChange={(e) => setEditFormLocation(e.target.value)}
                   />
                 </div>
 
-                <div className="form-group">
-                  <label>Condition</label>
+                <div className="form-field-group">
+                  <label className="form-field-label">Condition</label>
                   <input
                     type="text"
+                    className="form-field-input"
                     placeholder="e.g. Excellent, Minor wear"
                     value={editFormCondition}
                     onChange={(e) => setEditFormCondition(e.target.value)}
                   />
                 </div>
 
-                <div className="form-group">
-                  <label>Dimensions</label>
+                <div className="form-field-group">
+                  <label className="form-field-label">Dimensions</label>
                   <input
                     type="text"
+                    className="form-field-input"
                     placeholder="e.g. 36W x 24D x 48H"
                     value={editFormDimensions}
                     onChange={(e) => setEditFormDimensions(e.target.value)}
                   />
                 </div>
 
-                <div className="form-group">
-                  <label>Weight</label>
+                <div className="form-field-group">
+                  <label className="form-field-label">Weight</label>
                   <input
                     type="text"
+                    className="form-field-input"
                     placeholder="e.g. 25 lbs"
                     value={editFormWeight}
                     onChange={(e) => setEditFormWeight(e.target.value)}
@@ -2023,9 +2033,10 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="form-group" style={{ marginTop: '0.85rem' }}>
-                <label>Description & Notes</label>
+              <div className="form-field-group" style={{ marginTop: '0.5rem' }}>
+                <label className="form-field-label">Description & Notes</label>
                 <textarea
+                  className="form-field-textarea"
                   rows={3}
                   value={editFormDescription}
                   onChange={(e) => setEditFormDescription(e.target.value)}
@@ -2033,9 +2044,10 @@ export default function App() {
                 />
               </div>
 
-              <div className="form-group" style={{ marginTop: '0.85rem' }}>
-                <label>Family Story / History</label>
+              <div className="form-field-group">
+                <label className="form-field-label">Family Story / History</label>
                 <textarea
+                  className="form-field-textarea"
                   rows={3}
                   value={editFormStory}
                   onChange={(e) => setEditFormStory(e.target.value)}
@@ -2047,7 +2059,7 @@ export default function App() {
             <div className="modal-footer">
               <button
                 type="button"
-                className="btn-secondary"
+                className="btn-modal-secondary"
                 onClick={() => setAdminEditingItem(null)}
                 disabled={isSavingItemEdits}
               >
@@ -2055,7 +2067,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className="btn-primary"
+                className="btn-modal-primary"
                 onClick={handleSaveItemEdits}
                 disabled={isSavingItemEdits}
               >
