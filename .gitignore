@@ -5,3 +5,4 @@ dist
 *.local
 uploads/*
 !uploads/.gitkeep
+scratch/

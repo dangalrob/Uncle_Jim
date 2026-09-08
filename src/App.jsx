@@ -5,11 +5,12 @@ import {
   Search, Filter, Heart, ArrowLeft, ArrowRight, CheckCircle2, Camera, 
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
   Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff,
-  Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign
+  Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign, Crop
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import AdminWorkbench from './components/AdminWorkbench';
 import InstitutionPortal from './components/InstitutionPortal';
+import PhotoCropperModal from './components/PhotoCropperModal';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -26,6 +27,13 @@ export default function App() {
   const [itemInstitutionalCandidate, setItemInstitutionalCandidate] = useState('None');
   const [itemInstitutionalName, setItemInstitutionalName] = useState('');
   const [activeReviewPhotoIdx, setActiveReviewPhotoIdx] = useState(0);
+
+  // Photo Cropper Modal State
+  const [cropModalSrc, setCropModalSrc] = useState(null); // image URL being cropped
+  const [cropModalTarget, setCropModalTarget] = useState(null); // 'capture_primary' | { type: 'edit_photo', photo: photoObj }
+  const [croppedPhotoBlob, setCroppedPhotoBlob] = useState(null); // Blob for rapid capture primary photo
+  const [croppedPhotoPreview, setCroppedPhotoPreview] = useState(null); // ObjectURL for rapid capture preview
+
 
   // Admin Item Edit Modal State
   const [adminEditingItem, setAdminEditingItem] = useState(null);
@@ -339,6 +347,8 @@ export default function App() {
 
   const handleOpenCapture = () => {
     setCapturedPhotos([]);
+    setCroppedPhotoBlob(null);
+    setCroppedPhotoPreview(null);
     setItemTitle('');
     setItemLocation('');
     setItemCategory('');
@@ -727,6 +737,78 @@ export default function App() {
     }
   };
 
+  const handleSetPrimaryPhoto = async (photoId) => {
+    if (!adminEditingItem) return;
+    try {
+      const res = await fetch(`/api/items/${adminEditingItem.id}/photos/${photoId}/set-primary`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEditFormPhotos(data.photos || []);
+        await fetchItems();
+      } else {
+        alert("Failed to set primary photo.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error setting primary photo.");
+    }
+  };
+
+  const handleRestoreOriginalCrop = async (photoId) => {
+    if (!adminEditingItem) return;
+    try {
+      const res = await fetch(`/api/items/${adminEditingItem.id}/photos/${photoId}/restore-crop`, {
+        method: 'POST'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEditFormPhotos(data.photos || []);
+        await fetchItems();
+      } else {
+        alert("Failed to restore original photo framing.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error restoring photo framing.");
+    }
+  };
+
+  const handleCropModalConfirm = async ({ blob, previewUrl }) => {
+    if (!cropModalTarget) return;
+
+    if (cropModalTarget === 'capture_primary') {
+      setCroppedPhotoBlob(blob);
+      setCroppedPhotoPreview(previewUrl);
+      setCropModalSrc(null);
+      setCropModalTarget(null);
+    } else if (cropModalTarget.type === 'edit_photo') {
+      const { photo } = cropModalTarget;
+      try {
+        const formData = new FormData();
+        formData.append('croppedImage', blob, 'cropped.webp');
+        const res = await fetch(`/api/items/${adminEditingItem.id}/photos/${photo.id}/crop`, {
+          method: 'PUT',
+          body: formData
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setEditFormPhotos(data.photos || []);
+          await fetchItems();
+        } else {
+          alert("Failed to save cropped photo.");
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Error saving cropped photo.");
+      } finally {
+        setCropModalSrc(null);
+        setCropModalTarget(null);
+      }
+    }
+  };
+
   const handleSaveItemCapture = async () => {
     if (isSavingItem) return;
     setIsSavingItem(true);
@@ -768,6 +850,9 @@ export default function App() {
       formData.append('value', itemValue);
       for (let p of compressedList) {
         if (p.file) formData.append('photos', p.file);
+      }
+      if (croppedPhotoBlob) {
+        formData.append('croppedPhotos', croppedPhotoBlob, 'cropped.webp');
       }
 
       await fetch('/api/items/rapid-capture', {
@@ -1045,27 +1130,28 @@ export default function App() {
           {/* MOCKUP 1: LOGIN / WELCOME SCREEN */}
           {currentView === 'login' && (
             <div className="login-card-grid">
-              {/* Left Lake Photo Banner */}
-              <div className="login-banner-left">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                  <Trees size={32} color="var(--gold-accent)" />
+              {/* Lake and Trees Hero Image Banner */}
+              <div className="login-hero-banner">
+                <div className="login-hero-overlay">
+                  <Trees size={34} color="#f59e0b" style={{ filter: 'drop-shadow(0 2px 5px rgba(0, 0, 0, 0.6))', flexShrink: 0 }} />
                   <div>
-                    <div style={{ fontFamily: 'var(--font-heading)', fontSize: '1.4rem', fontWeight: 'bold' }}>Uncle Jim's Estate</div>
+                    <div className="login-hero-title">UNCLE JIM’S ESTATE</div>
+                    <div className="login-hero-subtitle">Manitowish Waters, Wisconsin</div>
                   </div>
                 </div>
               </div>
 
-              {/* Right Login Form */}
-              <div style={{ padding: '2.5rem 2rem', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)', marginBottom: '0.3rem' }}>Welcome</h2>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>Sign in to access the estate inventory.</p>
+              {/* Login Form Container */}
+              <div className="login-form-container">
+                <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.45rem', color: 'var(--pine-deep)', marginBottom: '0.25rem' }}>Welcome</h2>
+                <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>Sign in to access the estate inventory.</p>
 
                 {/* Quick Test Logins */}
-                <div style={{ background: 'var(--bg-subtle)', padding: '0.85rem', borderRadius: '8px', marginBottom: '1.25rem', border: '1px solid var(--border-color)' }}>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--pine-primary)', marginBottom: '0.4rem' }}>⚡ QUICK TEST LOGIN ACCOUNTS:</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+                <div className="login-test-accounts-box" style={{ background: 'var(--bg-subtle)', padding: '0.75rem 0.85rem', borderRadius: '8px', marginBottom: '1.25rem', border: '1px solid var(--border-color)' }}>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--pine-primary)', marginBottom: '0.45rem', letterSpacing: '0.5px' }}>⚡ QUICK TEST LOGIN ACCOUNTS:</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
                     {demoUsers.map((u, idx) => (
-                      <button key={idx} className="btn-outline" style={{ fontSize: '0.72rem', padding: '0.35rem 0.5rem', justifyContent: 'flex-start' }} onClick={() => handleLogin(u.email, 'password123')}>
+                      <button key={idx} className="btn-outline" style={{ fontSize: '0.74rem', minHeight: '38px', padding: '0.35rem 0.5rem', justifyContent: 'flex-start' }} onClick={() => handleLogin(u.email, 'password123')}>
                         {u.badge}
                       </button>
                     ))}
@@ -1074,14 +1160,33 @@ export default function App() {
 
                 <form onSubmit={(e) => { e.preventDefault(); handleLogin(); }}>
                   <div style={{ marginBottom: '1rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', marginBottom: '0.3rem' }}>Email</label>
-                    <input type="email" style={{ width: '100%', padding: '0.65rem', borderRadius: '6px', border: '1px solid var(--border-color)' }} value={loginEmail} onChange={e=>setLoginEmail(e.target.value)} placeholder="dan@example.com" required />
+                    <label style={{ display: 'block', fontSize: '0.88rem', fontWeight: '600', marginBottom: '0.35rem', color: 'var(--pine-deep)' }}>Email</label>
+                    <input
+                      type="email"
+                      style={{ width: '100%', minHeight: '48px', height: '48px', padding: '0 0.85rem', fontSize: '16px', borderRadius: '8px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+                      value={loginEmail}
+                      onChange={e=>setLoginEmail(e.target.value)}
+                      placeholder="dan@example.com"
+                      required
+                    />
                   </div>
-                  <div style={{ marginBottom: '1rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: '600', marginBottom: '0.3rem' }}>Password</label>
-                    <input type="password" style={{ width: '100%', padding: '0.65rem', borderRadius: '6px', border: '1px solid var(--border-color)' }} value={loginPassword} onChange={e=>setLoginPassword(e.target.value)} required />
+                  <div style={{ marginBottom: '1.25rem' }}>
+                    <label style={{ display: 'block', fontSize: '0.88rem', fontWeight: '600', marginBottom: '0.35rem', color: 'var(--pine-deep)' }}>Password</label>
+                    <input
+                      type="password"
+                      style={{ width: '100%', minHeight: '48px', height: '48px', padding: '0 0.85rem', fontSize: '16px', borderRadius: '8px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+                      value={loginPassword}
+                      onChange={e=>setLoginPassword(e.target.value)}
+                      required
+                    />
                   </div>
-                  <button type="submit" className="btn-green" style={{ width: '100%', padding: '0.75rem' }}>Sign In</button>
+                  <button
+                    type="submit"
+                    className="btn-green-senior"
+                    style={{ width: '100%', minHeight: '50px', fontSize: '1.05rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                  >
+                    Sign In
+                  </button>
                 </form>
               </div>
             </div>
@@ -1252,13 +1357,13 @@ export default function App() {
                     {/* CAMERA LABEL - Bypasses iOS click() bugs */}
                     <label className="btn-green-senior" style={{ width: '100%', minHeight: '56px', fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', margin: 0 }}>
                       <Camera size={22} style={{ marginRight: '8px' }} /> 📷 TAKE PHOTO WITH CAMERA
-                      <input type="file" accept="image/*" capture="environment" onChange={handlePhotosSelected} style={{ display: 'none' }} />
+                      <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" onChange={handlePhotosSelected} style={{ display: 'none' }} />
                     </label>
 
                     {/* LIBRARY LABEL */}
                     <label className="btn-outline" style={{ width: '100%', minHeight: '54px', fontSize: '0.95rem', fontWeight: 'bold', background: '#ffffff', color: 'var(--pine-deep)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', margin: 0 }}>
                       🖼️ CHOOSE FROM PHOTO LIBRARY
-                      <input type="file" accept="image/*" multiple onChange={handlePhotosSelected} style={{ display: 'none' }} />
+                      <input ref={libraryInputRef} type="file" accept="image/*" multiple onChange={handlePhotosSelected} style={{ display: 'none' }} />
                     </label>
 
                     <button className="btn-outline" style={{ width: '100%', minHeight: '46px', color: '#ffffff', borderColor: 'rgba(255,255,255,0.3)', background: 'transparent', justifyContent: 'center', marginTop: '0.5rem' }} onClick={handleNavigateHome}>
@@ -1328,11 +1433,122 @@ export default function App() {
                     New Item Details
                   </h2>
 
-                  <div style={{ position: 'relative', marginBottom: '1.5rem', borderRadius: '10px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
-                    <img src={capturedPhotos[0]?.url || OFFLINE_THUMB} style={{ width: '100%', height: '180px', objectFit: 'cover', display: 'block' }} alt="Item Preview" />
-                    <button style={{ position: 'absolute', bottom: '10px', right: '10px', background: 'rgba(20, 36, 28, 0.85)', color: '#fff', padding: '0.45rem 0.85rem', borderRadius: '6px', fontSize: '0.85rem', border: 'none', cursor: 'pointer', fontWeight: 'bold', backdropFilter: 'blur(2px)' }} onClick={handleTriggerLibrary}>
-                      🖼️ + Add Photos
-                    </button>
+                  <div style={{ marginBottom: '1.25rem' }}>
+                    <div style={{
+                      position: 'relative',
+                      borderRadius: '12px',
+                      overflow: 'hidden',
+                      border: '1px solid var(--border-color)',
+                      background: '#f6f5f0',
+                      minHeight: '190px',
+                      maxHeight: '260px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      <img
+                        src={croppedPhotoPreview || capturedPhotos[0]?.url || OFFLINE_THUMB}
+                        style={{
+                          maxWidth: '100%',
+                          maxHeight: '260px',
+                          objectFit: 'contain',
+                          display: 'block'
+                        }}
+                        alt="Item Preview"
+                      />
+
+                      {croppedPhotoPreview && (
+                        <div style={{
+                          position: 'absolute',
+                          top: '10px',
+                          left: '10px',
+                          background: 'rgba(37, 99, 235, 0.9)',
+                          color: '#fff',
+                          padding: '3px 9px',
+                          borderRadius: '12px',
+                          fontSize: '0.75rem',
+                          fontWeight: '600',
+                          backdropFilter: 'blur(2px)'
+                        }}>
+                          ✂️ Custom Crop Applied
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Photo Action Controls */}
+                    <div style={{ display: 'grid', gridTemplateColumns: croppedPhotoPreview ? '1fr 1fr' : '1fr 1fr', gap: '8px', marginTop: '8px' }}>
+                      <button
+                        type="button"
+                        className="btn-outline"
+                        style={{
+                          fontSize: '0.88rem',
+                          fontWeight: '600',
+                          color: 'var(--pine-deep)',
+                          borderColor: 'var(--pine-primary)',
+                          background: '#fff',
+                          minHeight: '44px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px'
+                        }}
+                        onClick={() => {
+                          if (capturedPhotos[0]?.url) {
+                            setCropModalSrc(capturedPhotos[0].url);
+                            setCropModalTarget('capture_primary');
+                          }
+                        }}
+                      >
+                        <Crop size={16} />
+                        {croppedPhotoPreview ? 'Re-crop Photo' : 'Crop / Adjust Photo'}
+                      </button>
+
+                      {croppedPhotoPreview ? (
+                        <button
+                          type="button"
+                          className="btn-outline"
+                          style={{
+                            fontSize: '0.85rem',
+                            fontWeight: '500',
+                            color: '#6b7280',
+                            borderColor: '#d1d5db',
+                            background: '#fff',
+                            minHeight: '44px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '5px'
+                          }}
+                          onClick={() => {
+                            setCroppedPhotoBlob(null);
+                            setCroppedPhotoPreview(null);
+                          }}
+                        >
+                          <RotateCcw size={15} />
+                          Reset Framing
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn-outline"
+                          style={{
+                            fontSize: '0.85rem',
+                            fontWeight: '500',
+                            color: 'var(--pine-deep)',
+                            borderColor: 'var(--border-color)',
+                            background: '#fff',
+                            minHeight: '44px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '5px'
+                          }}
+                          onClick={handleTriggerLibrary}
+                        >
+                          🖼️ + Add Photos
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="form-field-group">
@@ -1500,8 +1716,28 @@ export default function App() {
                           }
                         }}
                       >
-                        <div style={{ position: 'relative' }}>
-                          <img src={item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'} style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }} alt={item.title || "Estate Item"} />
+                        <div style={{
+                          position: 'relative',
+                          width: '100%',
+                          height: '210px',
+                          borderRadius: '8px',
+                          overflow: 'hidden',
+                          backgroundColor: '#f6f5f0',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          marginBottom: '0.65rem'
+                        }}>
+                          <img
+                            src={item.primary_thumb || item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'contain',
+                              display: 'block'
+                            }}
+                            alt={item.title || "Estate Item"}
+                          />
                           {currentUser?.role === 'admin' && (
                             <button
                               onClick={(e) => handleDeleteItem(item.id, e)}
@@ -2944,22 +3180,95 @@ export default function App() {
                 ) : (
                   <div className="edit-photos-grid">
                     {editFormPhotos.map((photo) => (
-                      <div key={photo.id} className="edit-photo-card">
-                        <img
-                          src={photo.thumbnail_url || photo.url}
-                          alt="Item photo"
-                        />
-                        {Boolean(photo.is_primary) && (
-                          <span className="edit-photo-primary-badge">Primary</span>
-                        )}
-                        <button
-                          type="button"
-                          className="edit-photo-delete-btn"
-                          title="Delete photo"
-                          onClick={() => handleDeletePhotoFromEditItem(photo.id)}
-                        >
-                          ✕
-                        </button>
+                      <div key={photo.id} className="edit-photo-card" style={{ display: 'flex', flexDirection: 'column', background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', overflow: 'hidden', padding: '6px' }}>
+                        <div style={{ position: 'relative', width: '100%', height: '120px', background: '#f6f5f0', borderRadius: '4px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <img
+                            src={photo.thumbnail_url || photo.photo_url || photo.url}
+                            alt="Item photo"
+                            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                          />
+                          {Boolean(photo.is_primary) && (
+                            <span className="edit-photo-primary-badge" style={{ position: 'absolute', top: '6px', left: '6px', margin: 0 }}>
+                              ★ Primary
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            className="edit-photo-delete-btn"
+                            title="Delete photo"
+                            onClick={() => handleDeletePhotoFromEditItem(photo.id)}
+                            style={{ position: 'absolute', top: '6px', right: '6px' }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+
+                        {/* Photo Action Buttons */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                          {!Boolean(photo.is_primary) && (
+                            <button
+                              type="button"
+                              className="btn-outline"
+                              style={{
+                                fontSize: '0.74rem',
+                                padding: '3px 6px',
+                                minHeight: '28px',
+                                justifyContent: 'center',
+                                color: 'var(--pine-primary)',
+                                borderColor: 'var(--pine-primary)',
+                                background: '#fff'
+                              }}
+                              onClick={() => handleSetPrimaryPhoto(photo.id)}
+                            >
+                              ★ Set as Primary
+                            </button>
+                          )}
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+                            <button
+                              type="button"
+                              className="btn-outline"
+                              style={{
+                                fontSize: '0.72rem',
+                                padding: '3px 4px',
+                                minHeight: '28px',
+                                justifyContent: 'center',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                                background: '#f8faf9'
+                              }}
+                              onClick={() => {
+                                const fullUrl = photo.photo_url || photo.url || photo.thumbnail_url;
+                                setCropModalSrc(fullUrl);
+                                setCropModalTarget({ type: 'edit_photo', photo });
+                              }}
+                              title="Crop or adjust framing"
+                            >
+                              <Crop size={12} />
+                              Re-crop
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-outline"
+                              style={{
+                                fontSize: '0.72rem',
+                                padding: '3px 4px',
+                                minHeight: '28px',
+                                justifyContent: 'center',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                                color: '#6b7280',
+                                background: '#f8faf9'
+                              }}
+                              onClick={() => handleRestoreOriginalCrop(photo.id)}
+                              title="Restore full uncropped framing"
+                            >
+                              <RotateCcw size={12} />
+                              Restore
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -3146,6 +3455,18 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Photo Cropper Modal */}
+      {cropModalSrc && (
+        <PhotoCropperModal
+          imageSrc={cropModalSrc}
+          onConfirm={handleCropModalConfirm}
+          onCancel={() => {
+            setCropModalSrc(null);
+            setCropModalTarget(null);
+          }}
+        />
       )}
     </div>
   );
