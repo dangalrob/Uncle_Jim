@@ -176,8 +176,34 @@ async function initDatabase() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
-    // Ensure 'value' column exists on items table for legacy databases
+    // Ensure 'value', 'institutional_candidate', and 'institutional_name' columns exist on items table
     db.run(`ALTER TABLE items ADD COLUMN value TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN institutional_candidate TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN institutional_name TEXT`, () => {});
+
+    db.run(`CREATE TABLE IF NOT EXISTS draft_order (
+      estate_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      order_index INTEGER NOT NULL,
+      PRIMARY KEY (estate_id, order_index)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS draft_picks (
+      id TEXT PRIMARY KEY,
+      estate_id TEXT NOT NULL,
+      round_number INTEGER NOT NULL,
+      pick_number INTEGER NOT NULL,
+      user_id TEXT NOT NULL,
+      user_name TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      item_title TEXT NOT NULL,
+      item_value TEXT,
+      picked_by_user_id TEXT NOT NULL,
+      is_reversed INTEGER DEFAULT 0,
+      reversed_by_user_id TEXT,
+      reversed_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
 
     // Seed Estate
     const estate = await dbGet(`SELECT * FROM estates WHERE id = 'estate_uncle_jim'`);
@@ -222,6 +248,39 @@ async function initDatabase() {
       for (const [id, eId, name, email, pass, role, phone, addr] of seedUsers) {
         await dbRun(`INSERT INTO users (id, estate_id, name, email, password_hash, role, phone, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
           id, eId, name, email, pass, role, phone, addr
+        ]);
+      }
+    }
+
+    // Ensure all 9 draft participants exist
+    const defaultPasswordHash = await bcrypt.hash('password123', 10);
+    const draftParticipants = [
+      { id: 'user_vinny', name: 'Vinny', email: 'vinny@unclejim.estate', role: 'reviewer' },
+      { id: 'user_brian', name: 'Brian', email: 'brian@unclejim.estate', role: 'reviewer' },
+      { id: 'user_jerry', name: 'Jerry', email: 'jerry@unclejim.estate', role: 'reviewer' },
+      { id: 'user_tim', name: 'Tim', email: 'tim@unclejim.estate', role: 'reviewer' },
+      { id: 'user_graceann', name: 'Grace Ann', email: 'graceann@unclejim.estate', role: 'reviewer' },
+      { id: 'user_ray', name: 'Ray', email: 'ray@unclejim.estate', role: 'reviewer' },
+      { id: 'user_patti', name: 'Patti', email: 'patti@unclejim.estate', role: 'reviewer' },
+      { id: 'user_dan', name: 'Dan', email: 'dan@unclejim.estate', role: 'admin' },
+      { id: 'user_jean', name: 'Jean', email: 'jean@unclejim.estate', role: 'reviewer' }
+    ];
+
+    for (const p of draftParticipants) {
+      const existingUser = await dbGet(`SELECT id FROM users WHERE id = ? OR email = ?`, [p.id, p.email]);
+      if (!existingUser) {
+        await dbRun(`INSERT INTO users (id, estate_id, name, email, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)`, [
+          p.id, 'estate_uncle_jim', p.name, p.email, defaultPasswordHash, p.role
+        ]);
+      }
+    }
+
+    // Seed default draft order if empty
+    const orderCount = await dbGet(`SELECT COUNT(*) as count FROM draft_order WHERE estate_id = 'estate_uncle_jim'`);
+    if (orderCount.count === 0) {
+      for (let i = 0; i < draftParticipants.length; i++) {
+        await dbRun(`INSERT INTO draft_order (estate_id, user_id, order_index) VALUES (?, ?, ?)`, [
+          'estate_uncle_jim', draftParticipants[i].id, i + 1
         ]);
       }
     }
@@ -441,17 +500,19 @@ app.post('/api/auth/logout', (req, res) => {
 // ----------------------------------------------------
 app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'contributor']), upload.array('photos', 10), async (req, res) => {
   try {
-    const { title, locationInHouse, categoryId, description, notes, value } = req.body;
+    const { title, locationInHouse, categoryId, description, notes, value, institutionalCandidate, institutionalName } = req.body;
     const itemId = 'item_' + Date.now();
     const itemNumber = 'UJ-' + Math.floor(100 + Math.random() * 900);
     const itemTitle = (title !== undefined && title !== null) ? title.trim() : '';
     const itemLocation = (locationInHouse !== undefined && locationInHouse !== null) ? locationInHouse.trim() : '';
     const itemDesc = (description || notes || '').trim();
     const itemValue = (value !== undefined && value !== null) ? value.trim() : '';
+    const instCandidate = (institutionalCandidate || 'None').trim();
+    const instName = (institutionalName || '').trim();
 
     await dbRun(
-      `INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, description, value, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')`,
-      [itemId, req.user.estate_id, itemNumber, itemTitle, categoryId || null, itemLocation || null, itemDesc || null, itemValue || null]
+      `INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, description, value, status, institutional_candidate, institutional_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
+      [itemId, req.user.estate_id, itemNumber, itemTitle, categoryId || null, itemLocation || null, itemDesc || null, itemValue || null, instCandidate, instName || null]
     );
 
     const savedPhotos = [];
@@ -498,12 +559,14 @@ app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'c
 // ----------------------------------------------------
 app.get('/api/items', authenticateToken, async (req, res) => {
   try {
-    const { status, category, search } = req.query;
+    const { status, category, search, myInterests } = req.query;
     let query = `
       SELECT i.*, c.name as category_name, c.icon as category_icon,
              (SELECT photo_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_photo,
              (SELECT thumbnail_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_thumb,
              (SELECT COUNT(*) FROM interests WHERE item_id = i.id AND interest_level = 'interested') as interested_count,
+             (SELECT COUNT(*) FROM interests WHERE item_id = i.id AND user_id = ? AND interest_level = 'interested') as user_interested,
+             (SELECT GROUP_CONCAT(u.name, ', ') FROM interests int_sub JOIN users u ON int_sub.user_id = u.id WHERE int_sub.item_id = i.id AND int_sub.interest_level = 'interested') as interested_names,
              (SELECT recipient_user_id FROM assignments WHERE item_id = i.id) as assigned_to_user_id,
              (SELECT u.name FROM assignments a JOIN users u ON a.recipient_user_id = u.id WHERE a.item_id = i.id) as assigned_to_name,
              (SELECT destination_name FROM assignments WHERE item_id = i.id) as destination_name
@@ -511,7 +574,7 @@ app.get('/api/items', authenticateToken, async (req, res) => {
       LEFT JOIN categories c ON i.category_id = c.id
       WHERE i.estate_id = ?
     `;
-    const params = [req.user.estate_id];
+    const params = [req.user.id, req.user.estate_id];
 
     // Family reviewers can only see released or assigned items
     if (req.user.role === 'reviewer') {
@@ -524,6 +587,11 @@ app.get('/api/items', authenticateToken, async (req, res) => {
     if (category) {
       query += ` AND i.category_id = ?`;
       params.push(category);
+    }
+
+    if (myInterests === 'true') {
+      query += ` AND EXISTS (SELECT 1 FROM interests WHERE item_id = i.id AND user_id = ? AND interest_level = 'interested')`;
+      params.push(req.user.id);
     }
 
     if (search) {
@@ -595,10 +663,12 @@ app.get('/api/items/:id', authenticateToken, async (req, res) => {
 
 app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor']), async (req, res) => {
   try {
-    const { title, categoryId, locationInHouse, location, condition, dimensions, weight, specialHandlingNotes, notes, description, storyText, provenanceSource, isHighValue, value, status } = req.body;
+    const { title, categoryId, locationInHouse, location, condition, dimensions, weight, specialHandlingNotes, notes, description, storyText, provenanceSource, isHighValue, value, status, institutionalCandidate, institutional_candidate, institutionalName, institutional_name } = req.body;
     const itemId = req.params.id;
     const finalLocation = locationInHouse !== undefined ? locationInHouse : location;
     const finalNotes = specialHandlingNotes !== undefined ? specialHandlingNotes : notes;
+    const finalInstCandidate = institutionalCandidate !== undefined ? institutionalCandidate : institutional_candidate;
+    const finalInstName = institutionalName !== undefined ? institutionalName : institutional_name;
 
     await dbRun(`
       UPDATE items
@@ -612,7 +682,9 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
           description = COALESCE(?, description),
           value = COALESCE(?, value),
           status = COALESCE(?, status),
-          is_high_value = COALESCE(?, is_high_value)
+          is_high_value = COALESCE(?, is_high_value),
+          institutional_candidate = CASE WHEN ? = 1 THEN ? ELSE institutional_candidate END,
+          institutional_name = CASE WHEN ? = 1 THEN ? ELSE institutional_name END
       WHERE id = ? AND estate_id = ?
     `, [
       title !== undefined ? title : null,
@@ -626,6 +698,10 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
       value !== undefined ? value : null,
       status !== undefined ? status : null,
       isHighValue !== undefined ? (isHighValue ? 1 : 0) : null,
+      finalInstCandidate !== undefined ? 1 : 0,
+      finalInstCandidate !== undefined ? finalInstCandidate : null,
+      finalInstName !== undefined ? 1 : 0,
+      finalInstName !== undefined ? finalInstName : null,
       itemId,
       req.user.estate_id
     ]);
@@ -823,7 +899,13 @@ app.get('/api/reviews/progress', authenticateToken, async (req, res) => {
 app.post('/api/items/:id/interest', authenticateToken, async (req, res) => {
   try {
     const itemId = req.params.id;
-    const { interestLevel, comment } = req.body; // 'interested' or 'not_interested'
+    const { interestLevel, comment } = req.body; // 'interested' or 'not_interested' / 'none'
+
+    if (interestLevel === 'none' || interestLevel === 'remove') {
+      await dbRun(`DELETE FROM interests WHERE item_id = ? AND user_id = ?`, [itemId, req.user.id]);
+      logAudit(req.user.estate_id, req.user.id, 'REMOVE_INTEREST', 'items', itemId, {});
+      return res.json({ success: true, removed: true });
+    }
 
     const assignment = await dbGet(`SELECT is_locked FROM assignments WHERE item_id = ?`, [itemId]);
     if (assignment && assignment.is_locked && req.user.role !== 'admin') {
@@ -843,6 +925,18 @@ app.post('/api/items/:id/interest', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to record interest" });
+  }
+});
+
+app.delete('/api/items/:id/interest', authenticateToken, async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    await dbRun(`DELETE FROM interests WHERE item_id = ? AND user_id = ?`, [itemId, req.user.id]);
+    logAudit(req.user.estate_id, req.user.id, 'REMOVE_INTEREST', 'items', itemId, {});
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to remove interest" });
   }
 });
 
@@ -952,6 +1046,274 @@ app.put('/api/items/:id/fulfillment', authenticateToken, requireRole(['admin']),
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to update fulfillment status" });
+  }
+});
+
+// ----------------------------------------------------
+// DRAFT MODE & FAMILY DRAFT ENDPOINTS
+// ----------------------------------------------------
+app.get('/api/draft/state', authenticateToken, async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const orderRows = await dbAll(`
+      SELECT o.order_index, o.user_id, u.name, u.email, u.role
+      FROM draft_order o
+      JOIN users u ON o.user_id = u.id
+      WHERE o.estate_id = ?
+      ORDER BY o.order_index ASC
+    `, [estateId]);
+
+    const pickCountRes = await dbGet(`
+      SELECT COUNT(*) as count FROM draft_picks WHERE estate_id = ? AND is_reversed = 0
+    `, [estateId]);
+    const activePickCount = pickCountRes ? pickCountRes.count : 0;
+
+    let currentRound = 1;
+    let currentPicker = null;
+    let turnIndex = 0;
+    if (orderRows.length > 0) {
+      currentRound = Math.floor(activePickCount / orderRows.length) + 1;
+      turnIndex = activePickCount % orderRows.length;
+      currentPicker = orderRows[turnIndex];
+    }
+
+    res.json({
+      draftOrder: orderRows,
+      activePickCount,
+      currentRound,
+      currentTurnIndex: turnIndex,
+      currentPicker,
+      isCurrentUserTurn: currentPicker ? (currentPicker.user_id === req.user.id) : false,
+      isAdmin: req.user.role === 'admin'
+    });
+  } catch (err) {
+    console.error("Draft state error:", err);
+    res.status(500).json({ error: "Failed to load draft state" });
+  }
+});
+
+app.post('/api/draft/order', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const { userIds } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: "userIds array required" });
+    }
+
+    await dbRun(`DELETE FROM draft_order WHERE estate_id = ?`, [estateId]);
+    for (let i = 0; i < userIds.length; i++) {
+      await dbRun(`INSERT INTO draft_order (estate_id, user_id, order_index) VALUES (?, ?, ?)`, [
+        estateId, userIds[i], i + 1
+      ]);
+    }
+
+    logAudit(estateId, req.user.id, 'UPDATE_DRAFT_ORDER', 'draft_order', estateId, { userIds });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Draft order error:", err);
+    res.status(500).json({ error: "Failed to update draft order" });
+  }
+});
+
+app.post('/api/draft/pick', authenticateToken, async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const { itemId, targetUserId } = req.body;
+    if (!itemId) return res.status(400).json({ error: "itemId is required" });
+
+    const orderRows = await dbAll(`
+      SELECT o.order_index, o.user_id, u.name
+      FROM draft_order o
+      JOIN users u ON o.user_id = u.id
+      WHERE o.estate_id = ?
+      ORDER BY o.order_index ASC
+    `, [estateId]);
+
+    if (orderRows.length === 0) {
+      return res.status(400).json({ error: "Draft order has not been established" });
+    }
+
+    const pickCountRes = await dbGet(`SELECT COUNT(*) as count FROM draft_picks WHERE estate_id = ? AND is_reversed = 0`, [estateId]);
+    const activePickCount = pickCountRes ? pickCountRes.count : 0;
+    const turnIndex = activePickCount % orderRows.length;
+    const currentRound = Math.floor(activePickCount / orderRows.length) + 1;
+    const currentPicker = orderRows[turnIndex];
+
+    let recipientUser = currentPicker;
+    if (req.user.role === 'admin' && targetUserId) {
+      const specifiedUser = await dbGet(`SELECT id, name FROM users WHERE id = ?`, [targetUserId]);
+      if (specifiedUser) recipientUser = { user_id: specifiedUser.id, name: specifiedUser.name };
+    } else {
+      if (req.user.role !== 'admin' && req.user.id !== currentPicker.user_id) {
+        return res.status(403).json({ error: `It is currently ${currentPicker.name}'s turn to pick.` });
+      }
+    }
+
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+    if (item.status === 'assigned') {
+      return res.status(400).json({ error: "This item has already been assigned." });
+    }
+
+    const overallPickNumber = activePickCount + 1;
+    const pickId = 'pick_' + Date.now();
+
+    await dbRun(`
+      INSERT INTO draft_picks (
+        id, estate_id, round_number, pick_number, user_id, user_name, item_id, item_title, item_value, picked_by_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      pickId,
+      estateId,
+      currentRound,
+      overallPickNumber,
+      recipientUser.user_id || recipientUser.id,
+      recipientUser.name,
+      item.id,
+      item.title,
+      item.value || null,
+      req.user.id
+    ]);
+
+    const existingAssign = await dbGet(`SELECT id FROM assignments WHERE item_id = ?`, [itemId]);
+    if (existingAssign) {
+      await dbRun(`
+        UPDATE assignments
+        SET recipient_user_id = ?, destination_type = 'family', destination_name = ?, is_locked = 1, assigned_by_user_id = ?, assigned_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [recipientUser.user_id || recipientUser.id, recipientUser.name, req.user.id, existingAssign.id]);
+    } else {
+      await dbRun(`
+        INSERT INTO assignments (id, item_id, recipient_user_id, destination_type, destination_name, is_locked, assigned_by_user_id)
+        VALUES (?, ?, ?, 'family', ?, 1, ?)
+      `, ['assign_' + Date.now(), itemId, recipientUser.user_id || recipientUser.id, recipientUser.name, req.user.id]);
+    }
+
+    await dbRun(`UPDATE items SET status = 'assigned' WHERE id = ?`, [itemId]);
+
+    logAudit(estateId, req.user.id, 'DRAFT_PICK', 'draft_picks', pickId, {
+      round: currentRound,
+      pickNumber: overallPickNumber,
+      itemId: item.id,
+      itemTitle: item.title,
+      recipientId: recipientUser.user_id || recipientUser.id,
+      recipientName: recipientUser.name
+    });
+
+    res.json({
+      success: true,
+      pick: {
+        id: pickId,
+        round_number: currentRound,
+        pick_number: overallPickNumber,
+        user_name: recipientUser.name,
+        item_title: item.title,
+        item_value: item.value
+      }
+    });
+  } catch (err) {
+    console.error("Draft pick error:", err);
+    res.status(500).json({ error: "Failed to record draft pick" });
+  }
+});
+
+app.post('/api/draft/picks/:id/reverse', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const pickId = req.params.id;
+    const estateId = req.user.estate_id;
+
+    const pick = await dbGet(`SELECT * FROM draft_picks WHERE id = ? AND estate_id = ?`, [pickId, estateId]);
+    if (!pick) return res.status(404).json({ error: "Draft pick not found" });
+    if (pick.is_reversed) return res.status(400).json({ error: "Pick is already reversed" });
+
+    await dbRun(`
+      UPDATE draft_picks
+      SET is_reversed = 1, reversed_by_user_id = ?, reversed_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [req.user.id, pickId]);
+
+    await dbRun(`DELETE FROM assignments WHERE item_id = ?`, [pick.item_id]);
+    await dbRun(`UPDATE items SET status = 'released' WHERE id = ?`, [pick.item_id]);
+
+    logAudit(estateId, req.user.id, 'REVERSE_DRAFT_PICK', 'draft_picks', pickId, {
+      itemId: pick.item_id,
+      itemTitle: pick.item_title,
+      reversedFromUser: pick.user_name,
+      pickNumber: pick.pick_number
+    });
+
+    res.json({ success: true, message: "Draft pick reversed and documented in audit log." });
+  } catch (err) {
+    console.error("Reverse pick error:", err);
+    res.status(500).json({ error: "Failed to reverse draft pick" });
+  }
+});
+
+app.get('/api/draft/history', authenticateToken, async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const picks = await dbAll(`
+      SELECT p.*,
+             u_conf.name as confirmed_by_name,
+             u_rev.name as reversed_by_name
+      FROM draft_picks p
+      LEFT JOIN users u_conf ON p.picked_by_user_id = u_conf.id
+      LEFT JOIN users u_rev ON p.reversed_by_user_id = u_rev.id
+      WHERE p.estate_id = ?
+      ORDER BY p.pick_number ASC, p.created_at ASC
+    `, [estateId]);
+    res.json(picks);
+  } catch (err) {
+    console.error("Draft history error:", err);
+    res.status(500).json({ error: "Failed to load draft history" });
+  }
+});
+
+app.get('/api/draft/summary-by-person', authenticateToken, async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const cousins = await dbAll(`
+      SELECT o.user_id, u.name, u.email
+      FROM draft_order o
+      JOIN users u ON o.user_id = u.id
+      WHERE o.estate_id = ?
+      ORDER BY o.order_index ASC
+    `, [estateId]);
+
+    const activePicks = await dbAll(`
+      SELECT p.id, p.user_id, p.item_id, p.item_title, p.item_value, p.pick_number, p.round_number, p.created_at,
+             i.item_number,
+             (SELECT photo_url FROM item_photos WHERE item_id = p.item_id ORDER BY is_primary DESC LIMIT 1) as photo_url
+      FROM draft_picks p
+      LEFT JOIN items i ON p.item_id = i.id
+      WHERE p.estate_id = ? AND p.is_reversed = 0
+      ORDER BY p.pick_number ASC
+    `, [estateId]);
+
+    const summary = cousins.map(c => {
+      const personPicks = activePicks.filter(p => p.user_id === c.user_id);
+      let totalValue = 0;
+      personPicks.forEach(p => {
+        if (p.item_value) {
+          const num = parseFloat(String(p.item_value).replace(/[^0-9.-]+/g, ''));
+          if (!isNaN(num)) totalValue += num;
+        }
+      });
+      return {
+        userId: c.user_id,
+        name: c.name,
+        email: c.email,
+        itemCount: personPicks.length,
+        totalValue: totalValue,
+        formattedTotalValue: '$' + Math.round(totalValue).toLocaleString(),
+        items: personPicks
+      };
+    });
+
+    res.json(summary);
+  } catch (err) {
+    console.error("Summary by person error:", err);
+    res.status(500).json({ error: "Failed to load summary by person" });
   }
 });
 

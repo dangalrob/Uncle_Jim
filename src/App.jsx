@@ -5,7 +5,7 @@ import {
   Search, Filter, Heart, ArrowLeft, ArrowRight, CheckCircle2, Camera, 
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
   Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff,
-  Edit3, Plus
+  Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import AdminWorkbench from './components/AdminWorkbench';
@@ -23,6 +23,8 @@ export default function App() {
   const [itemCategory, setItemCategory] = useState('');
   const [itemValue, setItemValue] = useState('');
   const [itemNotes, setItemNotes] = useState('');
+  const [itemInstitutionalCandidate, setItemInstitutionalCandidate] = useState('None');
+  const [itemInstitutionalName, setItemInstitutionalName] = useState('');
   const [activeReviewPhotoIdx, setActiveReviewPhotoIdx] = useState(0);
 
   // Admin Item Edit Modal State
@@ -38,9 +40,36 @@ export default function App() {
   const [editFormDescription, setEditFormDescription] = useState('');
   const [editFormStory, setEditFormStory] = useState('');
   const [editFormPhotos, setEditFormPhotos] = useState([]);
+  const [editFormInstitutionalCandidate, setEditFormInstitutionalCandidate] = useState('None');
+  const [editFormInstitutionalName, setEditFormInstitutionalName] = useState('');
   const [isSavingItemEdits, setIsSavingItemEdits] = useState(false);
   const [isUploadingEditPhotos, setIsUploadingEditPhotos] = useState(false);
   const editPhotoInputRef = useRef(null);
+
+  // Catalog Filter ('all' | 'my_interests')
+  const [catalogInterestFilter, setCatalogInterestFilter] = useState('all');
+
+  // Draft Mode State
+  const [draftState, setDraftState] = useState({
+    draftOrder: [],
+    activePickCount: 0,
+    currentRound: 1,
+    currentTurnIndex: 0,
+    currentPicker: null,
+    isCurrentUserTurn: false,
+    isAdmin: false
+  });
+  const [draftHistory, setDraftHistory] = useState([]);
+  const [draftSummary, setDraftSummary] = useState([]);
+  const [draftSubTab, setDraftSubTab] = useState('board'); // 'board' | 'history' | 'summary'
+  const [draftItemFilter, setDraftItemFilter] = useState('all'); // 'interested' | 'all'
+  const [draftSearch, setDraftSearch] = useState('');
+  const [draftCategoryFilter, setDraftCategoryFilter] = useState('');
+  const [confirmingDraftPick, setConfirmingDraftPick] = useState(null); // { item, picker }
+  const [confirmingReversePick, setConfirmingReversePick] = useState(null); // pick object
+  const [isReorderingDraft, setIsReorderingDraft] = useState(false);
+  const [reorderOrder, setReorderOrder] = useState([]);
+  const [isProcessingDraftAction, setIsProcessingDraftAction] = useState(false);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -397,6 +426,8 @@ export default function App() {
     setEditFormStatus(item.status || 'draft');
     setEditFormDescription(item.description || item.special_handling_notes || '');
     setEditFormStory(item.story || item.story_text || '');
+    setEditFormInstitutionalCandidate(item.institutional_candidate || 'None');
+    setEditFormInstitutionalName(item.institutional_name || '');
     setEditFormPhotos(item.photos || (item.primary_photo ? [{ id: 'prim', photo_url: item.primary_photo, thumbnail_url: item.primary_thumb || item.primary_photo, is_primary: 1 }] : []));
 
     try {
@@ -415,6 +446,8 @@ export default function App() {
         setEditFormDescription(fullItem.description || fullItem.special_handling_notes || '');
         const story = fullItem.stories && fullItem.stories.length > 0 ? fullItem.stories[0].story_text : (fullItem.story || '');
         setEditFormStory(story || '');
+        setEditFormInstitutionalCandidate(fullItem.institutional_candidate || 'None');
+        setEditFormInstitutionalName(fullItem.institutional_name || '');
         setEditFormPhotos(fullItem.photos || []);
       }
     } catch (err) {
@@ -437,7 +470,9 @@ export default function App() {
         weight: editFormWeight,
         status: editFormStatus,
         description: editFormDescription,
-        storyText: editFormStory
+        storyText: editFormStory,
+        institutionalCandidate: editFormInstitutionalCandidate,
+        institutionalName: editFormInstitutionalCandidate === 'Other' ? editFormInstitutionalName : ''
       };
 
       const res = await fetch(`/api/items/${adminEditingItem.id}`, {
@@ -458,6 +493,132 @@ export default function App() {
       alert("Error saving item changes.");
     } finally {
       setIsSavingItemEdits(false);
+    }
+  };
+
+  const fetchDraftData = async () => {
+    try {
+      const [stateRes, historyRes, summaryRes] = await Promise.all([
+        fetch('/api/draft/state'),
+        fetch('/api/draft/history'),
+        fetch('/api/draft/summary-by-person')
+      ]);
+      if (stateRes.ok) {
+        const data = await stateRes.json();
+        setDraftState(data);
+        if (data.draftOrder) {
+          setReorderOrder(data.draftOrder.map(d => d.user_id));
+        }
+      }
+      if (historyRes.ok) {
+        const hist = await historyRes.json();
+        setDraftHistory(hist);
+      }
+      if (summaryRes.ok) {
+        const summ = await summaryRes.json();
+        setDraftSummary(summ);
+      }
+      await fetchItems();
+    } catch (err) {
+      console.error("Error loading draft data:", err);
+    }
+  };
+
+  const handleToggleInterest = async (item, e) => {
+    if (e) e.stopPropagation();
+    const isCurrentlyInterested = Boolean(item.user_interested);
+    try {
+      if (isCurrentlyInterested) {
+        await fetch(`/api/items/${item.id}/interest`, {
+          method: 'DELETE'
+        });
+      } else {
+        await fetch(`/api/items/${item.id}/interest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ interestLevel: 'interested' })
+        });
+      }
+      await fetchItems();
+      if (currentView === 'my_interests') {
+        await fetchMyInterests();
+      }
+      if (currentView === 'draft_mode') {
+        await fetchDraftData();
+      }
+    } catch (err) {
+      console.error("Failed to toggle interest:", err);
+    }
+  };
+
+  const handleExecuteDraftPick = async () => {
+    if (!confirmingDraftPick) return;
+    setIsProcessingDraftAction(true);
+    try {
+      const res = await fetch('/api/draft/pick', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          itemId: confirmingDraftPick.item.id,
+          targetUserId: confirmingDraftPick.picker.user_id || confirmingDraftPick.picker.id
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Failed to make draft pick");
+      } else {
+        setConfirmingDraftPick(null);
+        await fetchDraftData();
+      }
+    } catch (err) {
+      console.error("Draft pick failed:", err);
+      alert("Error submitting draft pick.");
+    } finally {
+      setIsProcessingDraftAction(false);
+    }
+  };
+
+  const handleExecuteReversePick = async () => {
+    if (!confirmingReversePick) return;
+    setIsProcessingDraftAction(true);
+    try {
+      const res = await fetch(`/api/draft/picks/${confirmingReversePick.id}/reverse`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Failed to reverse pick");
+      } else {
+        setConfirmingReversePick(null);
+        await fetchDraftData();
+      }
+    } catch (err) {
+      console.error("Reverse pick failed:", err);
+      alert("Error reversing draft pick.");
+    } finally {
+      setIsProcessingDraftAction(false);
+    }
+  };
+
+  const handleSaveDraftOrder = async () => {
+    setIsProcessingDraftAction(true);
+    try {
+      const res = await fetch('/api/draft/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userIds: reorderOrder })
+      });
+      if (res.ok) {
+        setIsReorderingDraft(false);
+        await fetchDraftData();
+      } else {
+        const err = await res.json();
+        alert(err.error || "Failed to update draft order");
+      }
+    } catch (err) {
+      alert("Error saving draft order");
+    } finally {
+      setIsProcessingDraftAction(false);
     }
   };
 
@@ -733,9 +894,9 @@ export default function App() {
               </button>
             )}
 
-            {currentUser?.role === 'admin' && (
-              <button className={`sidebar-item ${currentView === 'draft_mode' ? 'active' : ''}`} onClick={() => { setCurrentView('draft_mode'); setMobileNavOpen(false); }}>
-                <Layers size={18} /> Draft Mode
+            {(currentUser?.role === 'admin' || currentUser?.role === 'reviewer' || currentUser?.role === 'contributor') && (
+              <button className={`sidebar-item ${currentView === 'draft_mode' ? 'active' : ''}`} onClick={() => { setCurrentView('draft_mode'); fetchDraftData(); setMobileNavOpen(false); }}>
+                <Layers size={18} /> Family Draft
               </button>
             )}
 
@@ -1208,94 +1369,168 @@ export default function App() {
           )}
 
           {/* MOCKUP 5: FAMILY MEMBER BROWSE & SEARCH */}
-          {currentView === 'catalog' && (
-            <div>
-              <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem' }}>
-                <div style={{ flex: 1, display: 'flex', background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.4rem 0.85rem', alignItems: 'center' }}>
-                  <Search size={18} color="var(--text-muted)" style={{ marginRight: '0.5rem' }} />
-                  <input type="text" style={{ border: 'none', outline: 'none', width: '100%', fontSize: '0.9rem' }} placeholder="Search books, artwork, maritime..." value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} />
-                  {searchQuery && (
-                    <button style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }} onClick={() => setSearchQuery('')} title="Clear Search">
-                      <X size={16} />
+          {currentView === 'catalog' && (() => {
+            const displayedItems = items.filter(item => {
+              if (catalogInterestFilter === 'my_interests' && !Boolean(item.user_interested)) return false;
+              return true;
+            });
+            const myInterestsCount = items.filter(i => Boolean(i.user_interested)).length;
+
+            return (
+              <div>
+                {/* Search and Filter Row */}
+                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: '240px', display: 'flex', background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.4rem 0.85rem', alignItems: 'center' }}>
+                    <Search size={18} color="var(--text-muted)" style={{ marginRight: '0.5rem' }} />
+                    <input type="text" style={{ border: 'none', outline: 'none', width: '100%', fontSize: '0.9rem' }} placeholder="Search books, artwork, maritime..." value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} />
+                    {searchQuery && (
+                      <button style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }} onClick={() => setSearchQuery('')} title="Clear Search">
+                        <X size={16} />
+                      </button>
+                    )}
+                  </div>
+                  {(searchQuery || categoryFilter || statusFilter || catalogInterestFilter !== 'all') && (
+                    <button className="btn-outline" style={{ fontSize: '0.82rem', color: '#d32f2f', borderColor: '#ffcdd2' }} onClick={() => { setSearchQuery(''); setCategoryFilter(''); setStatusFilter(''); setCatalogInterestFilter('all'); }}>
+                      <X size={14} style={{ marginRight: '4px' }} /> Clear Filters
                     </button>
                   )}
                 </div>
-                {(searchQuery || categoryFilter || statusFilter) && (
-                  <button className="btn-outline" style={{ fontSize: '0.82rem', color: '#d32f2f', borderColor: '#ffcdd2' }} onClick={() => { setSearchQuery(''); setCategoryFilter(''); setStatusFilter(''); }}>
-                    <X size={14} style={{ marginRight: '4px' }} /> Clear Filters
+
+                {/* Quick Filter Tabs */}
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', overflowX: 'auto', paddingBottom: '2px' }}>
+                  <button
+                    className={`btn-outline ${catalogInterestFilter === 'all' ? 'btn-green' : ''}`}
+                    style={{ fontSize: '0.88rem', padding: '0.4rem 0.9rem', borderRadius: '20px', whiteSpace: 'nowrap' }}
+                    onClick={() => setCatalogInterestFilter('all')}
+                  >
+                    📦 All Items ({items.length})
                   </button>
+                  <button
+                    className={`btn-outline ${catalogInterestFilter === 'my_interests' ? 'btn-green' : ''}`}
+                    style={{ fontSize: '0.88rem', padding: '0.4rem 0.9rem', borderRadius: '20px', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                    onClick={() => setCatalogInterestFilter('my_interests')}
+                  >
+                    <Star size={15} fill={catalogInterestFilter === 'my_interests' ? '#fff' : '#f59e0b'} color="#f59e0b" />
+                    My Interested Items ({myInterestsCount})
+                  </button>
+                </div>
+
+                {displayedItems.length === 0 ? (
+                  <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <Search size={48} color="var(--pine-primary)" style={{ opacity: 0.4, marginBottom: '1rem' }} />
+                    <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.3rem', color: 'var(--pine-deep)' }}>No items found</h3>
+                    <p style={{ fontSize: '0.9rem', marginTop: '0.4rem', marginBottom: '1.25rem' }}>
+                      {catalogInterestFilter === 'my_interests'
+                        ? "You haven't marked any possessions as interested yet."
+                        : "No catalog possessions match your current search or filter criteria."}
+                    </p>
+                    <button className="btn-green" style={{ padding: '0.65rem 1.25rem' }} onClick={() => { setSearchQuery(''); setCategoryFilter(''); setStatusFilter(''); setCatalogInterestFilter('all'); }}>
+                      🔄 Reset All Search & Filters
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1.25rem' }}>
+                    {displayedItems.map(item => (
+                      <div
+                        key={item.id}
+                        className="card"
+                        style={{ padding: '0.85rem', cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column' }}
+                        onClick={() => {
+                          if (currentUser?.role === 'admin') {
+                            handleStartEditItem(item);
+                          } else {
+                            const idx = items.findIndex(i => i.id === item.id);
+                            if (idx !== -1) setReviewIndex(idx);
+                            setActiveReviewPhotoIdx(0);
+                            setSelectedItem(item);
+                            setCurrentView('review');
+                          }
+                        }}
+                      >
+                        <div style={{ position: 'relative' }}>
+                          <img src={item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'} style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }} alt={item.title || "Estate Item"} />
+                          {currentUser?.role === 'admin' && (
+                            <button
+                              onClick={(e) => handleDeleteItem(item.id, e)}
+                              style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(211,47,47,0.9)', color: '#fff', border: 'none', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 10 }}
+                              title="Delete Item"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                        <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{item.title || 'Untitled Item'}</div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
+                          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{item.category_name || "Uncategorized"}</span>
+                          {item.value && (
+                            <span style={{ fontSize: '0.82rem', fontWeight: 'bold', color: 'var(--pine-primary)' }}>
+                              {item.value.startsWith('$') ? item.value : `$${item.value}`}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Institutional Candidate Badge */}
+                        {item.institutional_candidate && item.institutional_candidate !== 'None' && (
+                          <div style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '2px 8px', borderRadius: '4px', marginTop: '4px' }}>
+                            🏛️ {item.institutional_candidate === 'Other' ? (item.institutional_name || 'Institution') : item.institutional_candidate}
+                          </div>
+                        )}
+
+                        {/* Assignment Badge if already assigned */}
+                        {item.status === 'assigned' && (
+                          <div style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', fontWeight: 'bold', color: '#7b1fa2', background: '#f3e5f5', padding: '2px 8px', borderRadius: '4px', marginTop: '4px' }}>
+                            🔒 Assigned to {item.assigned_to_name || 'Family'}
+                          </div>
+                        )}
+
+                        {/* Interested Cousins List */}
+                        {item.interested_names && (
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                            ⭐ Interested: {item.interested_names}
+                          </div>
+                        )}
+
+                        <div style={{ marginTop: 'auto', paddingTop: '0.6rem' }}>
+                          {/* Family Interest Toggle Button */}
+                          <button
+                            className={Boolean(item.user_interested) ? 'btn-green' : 'btn-outline'}
+                            style={{
+                              fontSize: '0.8rem',
+                              padding: '0.45rem 0.65rem',
+                              width: '100%',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: '0.35rem',
+                              fontWeight: Boolean(item.user_interested) ? 'bold' : 'normal',
+                              background: Boolean(item.user_interested) ? 'var(--pine-primary)' : '#fff'
+                            }}
+                            onClick={(e) => handleToggleInterest(item, e)}
+                          >
+                            <Star size={15} fill={Boolean(item.user_interested) ? '#f59e0b' : 'none'} color={Boolean(item.user_interested) ? '#f59e0b' : 'var(--pine-primary)'} />
+                            {Boolean(item.user_interested) ? "Interested (Tap to Remove)" : "I'm Interested"}
+                          </button>
+
+                          {currentUser?.role === 'admin' && (
+                            <button
+                              className="btn-outline"
+                              style={{ fontSize: '0.8rem', padding: '0.4rem 0.6rem', marginTop: '0.4rem', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem', color: 'var(--pine-primary)', borderColor: 'var(--pine-primary)' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleStartEditItem(item);
+                              }}
+                            >
+                              <Edit3 size={14} /> Edit Item & Pictures
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
-
-              {items.length === 0 ? (
-                <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                  <Search size={48} color="var(--pine-primary)" style={{ opacity: 0.4, marginBottom: '1rem' }} />
-                  <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.3rem', color: 'var(--pine-deep)' }}>No items found</h3>
-                  <p style={{ fontSize: '0.9rem', marginTop: '0.4rem', marginBottom: '1.25rem' }}>No catalog possessions match your current search or filter criteria.</p>
-                  <button className="btn-green" style={{ padding: '0.65rem 1.25rem' }} onClick={() => { setSearchQuery(''); setCategoryFilter(''); setStatusFilter(''); }}>
-                    🔄 Reset All Search & Filters
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1.25rem' }}>
-                  {items.map(item => (
-                    <div
-                      key={item.id}
-                      className="card"
-                      style={{ padding: '0.85rem', cursor: 'pointer', position: 'relative' }}
-                      onClick={() => {
-                        if (currentUser?.role === 'admin') {
-                          handleStartEditItem(item);
-                        } else {
-                          const idx = items.findIndex(i => i.id === item.id);
-                          if (idx !== -1) setReviewIndex(idx);
-                          setActiveReviewPhotoIdx(0);
-                          setSelectedItem(item);
-                          setCurrentView('review');
-                        }
-                      }}
-                    >
-                      <div style={{ position: 'relative' }}>
-                        <img src={item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'} style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }} alt={item.title || "Estate Item"} />
-                        <Heart size={18} color="#d32f2f" style={{ position: 'absolute', bottom: '12px', right: '12px', background: '#fff', borderRadius: '50%', padding: '3px' }} />
-                        {currentUser?.role === 'admin' && (
-                          <button
-                            onClick={(e) => handleDeleteItem(item.id, e)}
-                            style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(211,47,47,0.9)', color: '#fff', border: 'none', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 10 }}
-                            title="Delete Item"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        )}
-                      </div>
-                      <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{item.title || 'Untitled Item'}</div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
-                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{item.category_name || "Uncategorized"}</span>
-                        {item.value && (
-                          <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: 'var(--pine-primary)' }}>
-                            {item.value.startsWith('$') ? item.value : `$${item.value}`}
-                          </span>
-                        )}
-                      </div>
-
-                      {currentUser?.role === 'admin' && (
-                        <button
-                          className="btn-outline"
-                          style={{ fontSize: '0.8rem', padding: '0.4rem 0.6rem', marginTop: '0.65rem', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem', color: 'var(--pine-primary)', borderColor: 'var(--pine-primary)' }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleStartEditItem(item);
-                          }}
-                        >
-                          <Edit3 size={14} /> Edit Item & Pictures
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+            );
+          })()}
 
           {/* MOCKUP 6 & 7: FAMILY MEMBER REVIEW ITEM (ONE AT A TIME) */}
           {currentView === 'review' && (() => {
@@ -1397,14 +1632,25 @@ export default function App() {
 
                     {/* Mockup 7: Who's Interested & Decision Panel */}
                     <div className="decision-panel">
+                      {currentReviewItem?.institutional_candidate && currentReviewItem.institutional_candidate !== 'None' && (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '4px 10px', borderRadius: '6px', marginBottom: '0.75rem' }}>
+                          🏛️ Institutional Candidate: {currentReviewItem.institutional_candidate === 'Other' ? (currentReviewItem.institutional_name || 'Institution') : currentReviewItem.institutional_candidate}
+                        </div>
+                      )}
+
                       <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.1rem', marginBottom: '0.85rem' }}>Who's interested?</h3>
                       {currentReviewItem?.interested_count > 0 ? (
-                        <div style={{ fontSize: '0.9rem', color: 'var(--pine-primary)', fontWeight: 'bold', marginBottom: '1rem' }}>
+                        <div style={{ fontSize: '0.9rem', color: 'var(--pine-primary)', fontWeight: 'bold', marginBottom: '0.5rem' }}>
                           ❤️ {currentReviewItem.interested_count} family member(s) marked interest in this item.
                         </div>
                       ) : (
-                        <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontStyle: 'italic', marginBottom: '1rem' }}>
+                        <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontStyle: 'italic', marginBottom: '0.5rem' }}>
                           No family members have marked interest yet.
+                        </div>
+                      )}
+                      {currentReviewItem?.interested_names && (
+                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+                          ⭐ Interested family members: <strong>{currentReviewItem.interested_names}</strong>
                         </div>
                       )}
 
@@ -1549,21 +1795,636 @@ export default function App() {
             </div>
           )}
 
-          {/* MOCKUP 11: DRAFT MODE (OPTIONAL FANTASY DRAFT) */}
-          {currentView === 'draft_mode' && (
-            <div>
-              <div style={{ background: 'var(--pine-primary)', color: '#fff', padding: '0.75rem 1.25rem', borderRadius: '8px', marginBottom: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontWeight: 'bold' }}>Estate Draft</span>
-                <span className="badge-status" style={{ background: '#fff', color: 'var(--pine-primary)' }}>Draft Mode</span>
-              </div>
+          {/* FAMILY ESTATE DRAFT VIEW */}
+          {currentView === 'draft_mode' && (() => {
+            const availableItems = items.filter(i => i.status === 'released' || (i.status !== 'assigned' && i.status !== 'completed' && i.status !== 'draft'));
+            const currentPickerName = draftState.currentPicker?.name || '';
+            
+            // Current picker's interested items
+            const pickerInterestedItems = availableItems.filter(i => {
+              if (!currentPickerName) return false;
+              if (i.interested_names && i.interested_names.toLowerCase().includes(currentPickerName.toLowerCase())) return true;
+              if (draftState.isCurrentUserTurn && Boolean(i.user_interested)) return true;
+              return false;
+            });
 
-              <div className="card" style={{ marginBottom: '1.5rem' }}>
-                <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.2rem', marginBottom: '0.75rem' }}>Round 1 of 5 | Tim's Pick</h3>
-                <div style={{ display: 'flex', gap: '0.75rem' }}>
-                  <span className="btn-green" style={{ padding: '0.4rem 0.85rem' }}>1 Tim</span>
-                  <span className="btn-outline" style={{ padding: '0.4rem 0.85rem' }}>2 Jean</span>
-                  <span className="btn-outline" style={{ padding: '0.4rem 0.85rem' }}>3 Susan</span>
-                  <span className="btn-outline" style={{ padding: '0.4rem 0.85rem' }}>4 Matt</span>
+            const displayedDraftItems = (draftItemFilter === 'interested' ? pickerInterestedItems : availableItems).filter(item => {
+              if (draftSearch) {
+                const q = draftSearch.toLowerCase();
+                const matchTitle = (item.title || '').toLowerCase().includes(q);
+                const matchNum = (item.item_number || '').toLowerCase().includes(q);
+                const matchCat = (item.category_name || '').toLowerCase().includes(q);
+                const matchDesc = (item.description || '').toLowerCase().includes(q);
+                if (!matchTitle && !matchNum && !matchCat && !matchDesc) return false;
+              }
+              if (draftCategoryFilter && item.category_id !== draftCategoryFilter) return false;
+              return true;
+            });
+
+            return (
+              <div>
+                {/* DRAFT HEADER BANNER */}
+                <div style={{
+                  background: draftState.isCurrentUserTurn 
+                    ? 'linear-gradient(135deg, #1b3d2b 0%, #29573e 100%)' 
+                    : 'var(--pine-deep)',
+                  color: '#fff',
+                  padding: '1.25rem',
+                  borderRadius: '12px',
+                  marginBottom: '1.25rem',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                  border: draftState.isCurrentUserTurn ? '2px solid #f59e0b' : 'none'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                        <Layers size={22} color={draftState.isCurrentUserTurn ? '#f59e0b' : '#a3c2b1'} />
+                        <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.4rem', fontWeight: 'bold', margin: 0, color: '#fff' }}>
+                          Uncle Jim's Estate Draft
+                        </h1>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '0.88rem', color: '#c4dbce' }}>
+                        Round {draftState.currentRound} | Overall Pick #{draftState.activePickCount + 1}
+                      </p>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      {currentUser?.role === 'admin' && (
+                        <button
+                          className="btn-outline"
+                          style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.1)', fontSize: '0.82rem', padding: '0.35rem 0.75rem', minHeight: '36px' }}
+                          onClick={() => setIsReorderingDraft(true)}
+                        >
+                          <Settings size={15} style={{ marginRight: '4px' }} /> Reorder Draft
+                        </button>
+                      )}
+                      <button
+                        className="btn-outline"
+                        style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.1)', fontSize: '0.82rem', padding: '0.35rem 0.75rem', minHeight: '36px' }}
+                        onClick={fetchDraftData}
+                        title="Refresh draft board"
+                      >
+                        <RefreshCw size={15} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* TURN STATUS HIGHLIGHT */}
+                  <div style={{
+                    background: draftState.isCurrentUserTurn ? 'rgba(245, 158, 11, 0.2)' : 'rgba(255,255,255,0.08)',
+                    border: draftState.isCurrentUserTurn ? '1px solid rgba(245, 158, 11, 0.6)' : '1px solid rgba(255,255,255,0.12)',
+                    borderRadius: '8px',
+                    padding: '0.85rem 1rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: '0.5rem'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                      <span style={{ fontSize: '1.4rem' }}>{draftState.isCurrentUserTurn ? '⭐' : '🎯'}</span>
+                      <div>
+                        <div style={{ fontWeight: 'bold', fontSize: '1.05rem', color: draftState.isCurrentUserTurn ? '#fcd34d' : '#fff' }}>
+                          {draftState.isCurrentUserTurn ? "IT'S YOUR TURN TO PICK!" : `On The Clock: ${currentPickerName || 'Waiting...'}`}
+                        </div>
+                        <div style={{ fontSize: '0.82rem', color: '#c4dbce' }}>
+                          {draftState.isCurrentUserTurn 
+                            ? "Browse items below and choose your selection for this round."
+                            : currentUser?.role === 'admin'
+                              ? `Admin Mode: You may record a pick on behalf of ${currentPickerName}.`
+                              : `Please wait while ${currentPickerName} makes their draft selection.`}
+                        </div>
+                      </div>
+                    </div>
+                    <span className="badge-status" style={{ background: '#fff', color: 'var(--pine-deep)', fontWeight: 'bold', padding: '0.35rem 0.75rem' }}>
+                      Pick #{draftState.activePickCount + 1}
+                    </span>
+                  </div>
+
+                  {/* DRAFT ORDER RIBBON */}
+                  <div style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                    <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: '#a3c2b1', marginBottom: '0.45rem', fontWeight: 'bold' }}>
+                      Draft Order Sequence:
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', overflowX: 'auto', paddingBottom: '4px' }}>
+                      {draftState.draftOrder.map((participant, idx) => {
+                        const isCurrent = draftState.currentPicker?.user_id === participant.user_id;
+                        return (
+                          <div
+                            key={participant.user_id}
+                            style={{
+                              background: isCurrent ? '#f59e0b' : 'rgba(255,255,255,0.12)',
+                              color: isCurrent ? '#1a3323' : '#fff',
+                              borderRadius: '20px',
+                              padding: '0.25rem 0.75rem',
+                              fontSize: '0.82rem',
+                              fontWeight: isCurrent ? 'bold' : 'normal',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.35rem',
+                              whiteSpace: 'nowrap',
+                              boxShadow: isCurrent ? '0 0 8px rgba(245, 158, 11, 0.6)' : 'none'
+                            }}
+                          >
+                            <span>{idx + 1}.</span>
+                            <span>{participant.name}</span>
+                            {isCurrent && <span>★</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* DRAFT SUB-TABS NAVIGATION */}
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', borderBottom: '2px solid var(--border-color)', paddingBottom: '0.5rem', overflowX: 'auto' }}>
+                  <button
+                    className={`btn-outline ${draftSubTab === 'board' ? 'btn-green' : ''}`}
+                    style={{ fontSize: '0.9rem', padding: '0.45rem 1rem', borderRadius: '8px', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                    onClick={() => setDraftSubTab('board')}
+                  >
+                    🎯 Draft Board (Pick Items)
+                  </button>
+                  <button
+                    className={`btn-outline ${draftSubTab === 'history' ? 'btn-green' : ''}`}
+                    style={{ fontSize: '0.9rem', padding: '0.45rem 1rem', borderRadius: '8px', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                    onClick={() => setDraftSubTab('history')}
+                  >
+                    📜 Draft History & Log ({draftHistory.length})
+                  </button>
+                  <button
+                    className={`btn-outline ${draftSubTab === 'summary' ? 'btn-green' : ''}`}
+                    style={{ fontSize: '0.9rem', padding: '0.45rem 1rem', borderRadius: '8px', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                    onClick={() => setDraftSubTab('summary')}
+                  >
+                    📊 Items Drafted by Person
+                  </button>
+                </div>
+
+                {/* TAB 1: DRAFT BOARD */}
+                {draftSubTab === 'board' && (
+                  <div>
+                    {/* Filter Pills: Current Picker's Interests vs All Available Items */}
+                    <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                      <button
+                        className={`btn-outline ${draftItemFilter === 'interested' ? 'btn-green' : ''}`}
+                        style={{ fontSize: '0.88rem', padding: '0.4rem 0.9rem', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                        onClick={() => setDraftItemFilter('interested')}
+                      >
+                        <Star size={15} fill={draftItemFilter === 'interested' ? '#fff' : '#f59e0b'} color="#f59e0b" />
+                        {currentPickerName}'s Interested Items ({pickerInterestedItems.length})
+                      </button>
+                      <button
+                        className={`btn-outline ${draftItemFilter === 'all' ? 'btn-green' : ''}`}
+                        style={{ fontSize: '0.88rem', padding: '0.4rem 0.9rem', borderRadius: '20px' }}
+                        onClick={() => setDraftItemFilter('all')}
+                      >
+                        📦 All Available Items ({availableItems.length})
+                      </button>
+                    </div>
+
+                    {/* Search and Category Filter for Draft */}
+                    <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                      <div style={{ flex: 1, minWidth: '220px', display: 'flex', background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.4rem 0.85rem', alignItems: 'center' }}>
+                        <Search size={18} color="var(--text-muted)" style={{ marginRight: '0.5rem' }} />
+                        <input
+                          type="text"
+                          style={{ border: 'none', outline: 'none', width: '100%', fontSize: '0.9rem' }}
+                          placeholder="Search available inventory during draft..."
+                          value={draftSearch}
+                          onChange={e => setDraftSearch(e.target.value)}
+                        />
+                        {draftSearch && (
+                          <button style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }} onClick={() => setDraftSearch('')}>
+                            <X size={16} />
+                          </button>
+                        )}
+                      </div>
+
+                      <select
+                        style={{ padding: '0.4rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', background: '#fff', fontSize: '0.9rem', outline: 'none' }}
+                        value={draftCategoryFilter}
+                        onChange={e => setDraftCategoryFilter(e.target.value)}
+                      >
+                        <option value="">All Categories</option>
+                        {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+
+                    {/* Available Items Grid */}
+                    {displayedDraftItems.length === 0 ? (
+                      <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                        <Package size={48} color="var(--pine-primary)" style={{ opacity: 0.4, marginBottom: '1rem' }} />
+                        <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.25rem', color: 'var(--pine-deep)' }}>No available items</h3>
+                        <p style={{ fontSize: '0.9rem', marginTop: '0.35rem', marginBottom: '1.25rem' }}>
+                          {draftItemFilter === 'interested'
+                            ? `${currentPickerName} has no remaining unassigned interested items matching this search.`
+                            : "No available inventory items match your search or filter criteria."}
+                        </p>
+                        {draftItemFilter === 'interested' && (
+                          <button className="btn-green" style={{ padding: '0.6rem 1.25rem' }} onClick={() => setDraftItemFilter('all')}>
+                            View All Available Items ➔
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '1.25rem' }}>
+                        {displayedDraftItems.map(item => {
+                          const canPick = currentUser?.role === 'admin' || draftState.isCurrentUserTurn;
+
+                          return (
+                            <div
+                              key={item.id}
+                              className="card"
+                              style={{ padding: '0.85rem', display: 'flex', flexDirection: 'column', position: 'relative' }}
+                            >
+                              <div style={{ position: 'relative' }}>
+                                <img
+                                  src={item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'}
+                                  style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }}
+                                  alt={item.title || "Estate Item"}
+                                />
+                                {item.item_number && (
+                                  <span style={{ position: 'absolute', top: '8px', left: '8px', background: 'rgba(0,0,0,0.65)', color: '#fff', fontSize: '0.72rem', fontWeight: 'bold', padding: '2px 6px', borderRadius: '4px' }}>
+                                    {item.item_number}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div style={{ fontWeight: 'bold', fontSize: '1rem', marginBottom: '2px' }}>
+                                {item.title || 'Untitled Item'}
+                              </div>
+
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{item.category_name || "Uncategorized"}</span>
+                                {item.value && (
+                                  <span style={{ fontSize: '0.88rem', fontWeight: 'bold', color: 'var(--pine-primary)' }}>
+                                    {item.value.startsWith('$') ? item.value : `$${item.value}`}
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Institutional Candidate Tag */}
+                              {item.institutional_candidate && item.institutional_candidate !== 'None' && (
+                                <div style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '2px 8px', borderRadius: '4px', marginBottom: '4px' }}>
+                                  🏛️ {item.institutional_candidate === 'Other' ? (item.institutional_name || 'Institution') : item.institutional_candidate}
+                                </div>
+                              )}
+
+                              {/* Interested Cousins List */}
+                              {item.interested_names ? (
+                                <div style={{ fontSize: '0.78rem', color: '#555', background: '#f8faf9', padding: '0.35rem 0.5rem', borderRadius: '4px', margin: '4px 0 8px 0' }}>
+                                  ⭐ <strong>Interested:</strong> {item.interested_names}
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic', margin: '4px 0 8px 0' }}>
+                                  No family interest expressed yet
+                                </div>
+                              )}
+
+                              {/* Draft Action Button */}
+                              <div style={{ marginTop: 'auto', paddingTop: '0.5rem' }}>
+                                <button
+                                  className={canPick ? "btn-green-senior" : "btn-outline"}
+                                  style={{
+                                    width: '100%',
+                                    minHeight: '48px',
+                                    fontSize: '0.92rem',
+                                    fontWeight: 'bold',
+                                    justifyContent: 'center',
+                                    opacity: canPick ? 1 : 0.6,
+                                    cursor: canPick ? 'pointer' : 'not-allowed'
+                                  }}
+                                  disabled={!canPick}
+                                  onClick={() => setConfirmingDraftPick({ item, picker: draftState.currentPicker })}
+                                >
+                                  {canPick 
+                                    ? `🎯 Draft to ${currentPickerName}` 
+                                    : `⏳ Waiting for ${currentPickerName}'s turn`}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 2: DRAFT HISTORY & REVERSALS */}
+                {draftSubTab === 'history' && (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <div>
+                        <h2 style={{ fontSize: '1.2rem', fontWeight: 'bold', color: 'var(--pine-deep)', margin: 0 }}>
+                          📜 Permanent Draft History Log
+                        </h2>
+                        <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '0.2rem 0 0 0' }}>
+                          Chronological immutable record of all draft selections and admin corrections.
+                        </p>
+                      </div>
+                    </div>
+
+                    {draftHistory.length === 0 ? (
+                      <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                        <Clock size={44} color="var(--pine-primary)" style={{ opacity: 0.4, marginBottom: '0.75rem' }} />
+                        <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.25rem', color: 'var(--pine-deep)' }}>No picks made yet</h3>
+                        <p style={{ fontSize: '0.9rem', marginTop: '0.25rem' }}>The draft log will record each pick as it is confirmed.</p>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                        {draftHistory.map(pick => (
+                          <div
+                            key={pick.id}
+                            className="card"
+                            style={{
+                              padding: '1rem',
+                              borderLeft: pick.is_reversed ? '4px solid #d32f2f' : '4px solid var(--pine-primary)',
+                              background: pick.is_reversed ? '#fffafa' : '#fff'
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span style={{ fontWeight: 'bold', fontSize: '1rem', color: 'var(--pine-deep)' }}>
+                                  Pick #{pick.pick_number}
+                                </span>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                  (Round {pick.round_number})
+                                </span>
+                              </div>
+                              {pick.is_reversed ? (
+                                <span className="badge-status" style={{ background: '#ffebee', color: '#c62828', fontWeight: 'bold', fontSize: '0.72rem' }}>
+                                  ⚠️ REVERSED
+                                </span>
+                              ) : (
+                                <span className="badge-status badge-released" style={{ fontSize: '0.75rem' }}>
+                                  ✅ Drafted
+                                </span>
+                              )}
+                            </div>
+
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                              <div>
+                                <div style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#1a1a1a' }}>
+                                  {pick.item_title}
+                                </div>
+                                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                  Item ID: {pick.item_id}
+                                </div>
+                              </div>
+                              <div style={{ fontWeight: 'bold', fontSize: '1.05rem', color: 'var(--pine-primary)', whiteSpace: 'nowrap' }}>
+                                {pick.item_value ? (pick.item_value.startsWith('$') ? pick.item_value : `$${pick.item_value}`) : '—'}
+                              </div>
+                            </div>
+
+                            <div style={{ fontSize: '0.88rem', color: '#333', marginBottom: '0.25rem' }}>
+                              Drafted to: <strong style={{ color: 'var(--pine-primary)' }}>{pick.user_name}</strong>
+                            </div>
+
+                            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border-color)' }}>
+                              <div>
+                                <span>Confirmed by {pick.confirmed_by_name || 'System'}</span> • {new Date(pick.created_at).toLocaleString()}
+                              </div>
+                              {pick.is_reversed && (
+                                <div style={{ color: '#c62828', width: '100%', fontWeight: '500' }}>
+                                  Correction logged by {pick.reversed_by_name || 'Admin'} on {new Date(pick.reversed_at).toLocaleString()}
+                                </div>
+                              )}
+                              {currentUser?.role === 'admin' && !pick.is_reversed && (
+                                <button
+                                  className="btn-outline"
+                                  style={{ color: '#d32f2f', borderColor: '#ffcdd2', fontSize: '0.78rem', padding: '0.35rem 0.75rem', marginLeft: 'auto', marginTop: '4px' }}
+                                  onClick={() => setConfirmingReversePick(pick)}
+                                >
+                                  ↩️ Reverse Pick
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 3: ITEMS DRAFTED BY PERSON & VALUE REPORTING */}
+                {draftSubTab === 'summary' && (
+                  <div>
+                    <div style={{ marginBottom: '1.25rem' }}>
+                      <h2 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--pine-deep)', margin: 0 }}>
+                        📊 Items Drafted by Person & Total Values
+                      </h2>
+                      <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '0.25rem 0 0 0' }}>
+                        Estate accounting summary calculating total appraised/estimated possession values received by each cousin.
+                      </p>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.25rem' }}>
+                      {draftSummary.map(person => (
+                        <div key={person.userId} className="card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                            <div style={{ fontWeight: 'bold', fontSize: '1.15rem', color: 'var(--pine-deep)' }}>
+                              {person.name}
+                            </div>
+                            <span className="badge-status" style={{ background: '#f0f4f2', color: 'var(--pine-primary)', fontWeight: 'bold' }}>
+                              {person.itemCount} Item{person.itemCount !== 1 ? 's' : ''}
+                            </span>
+                          </div>
+
+                          {/* Total Value Banner */}
+                          <div style={{
+                            background: '#f4f8f5',
+                            border: '1px solid #d1e3d7',
+                            borderRadius: '8px',
+                            padding: '0.65rem 0.85rem',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            marginBottom: '1rem'
+                          }}>
+                            <span style={{ fontSize: '0.85rem', fontWeight: '600', color: 'var(--pine-deep)' }}>Total Appraised Value:</span>
+                            <span style={{ fontSize: '1.15rem', fontWeight: 'bold', color: 'var(--pine-primary)' }}>
+                              {person.formattedTotalValue}
+                            </span>
+                          </div>
+
+                          {/* Itemized List */}
+                          <div style={{ flex: 1 }}>
+                            {person.items && person.items.length > 0 ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                {person.items.map(item => (
+                                  <div
+                                    key={item.id}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '0.65rem',
+                                      background: '#fff',
+                                      border: '1px solid var(--border-color)',
+                                      borderRadius: '6px',
+                                      padding: '0.45rem 0.65rem'
+                                    }}
+                                  >
+                                    <img
+                                      src={item.photo_url || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=150&q=80'}
+                                      style={{ width: '42px', height: '42px', objectFit: 'cover', borderRadius: '4px' }}
+                                      alt={item.item_title}
+                                    />
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                      <div style={{ fontWeight: '600', fontSize: '0.88rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                        {item.item_title}
+                                      </div>
+                                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                        {item.item_number ? `${item.item_number} • ` : ''}Pick #{item.pick_number} (Round {item.round_number})
+                                      </div>
+                                    </div>
+                                    <div style={{ fontWeight: 'bold', fontSize: '0.88rem', color: 'var(--pine-primary)', whiteSpace: 'nowrap' }}>
+                                      {item.item_value ? (item.item_value.startsWith('$') ? item.item_value : `$${item.item_value}`) : '—'}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div style={{ textAlign: 'center', padding: '1.25rem', color: 'var(--text-muted)', fontSize: '0.88rem', fontStyle: 'italic' }}>
+                                No items drafted yet.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ marginTop: '1.5rem', padding: '0.85rem', background: '#f8faf9', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                      ℹ️ <em>Notice: Total values are calculated for estate accounting and inventory reporting purposes. Final inheritance and cash distributions are handled separately by the estate executor.</em>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* CONFIRM DRAFT PICK MODAL */}
+          {confirmingDraftPick && (
+            <div className="modal-overlay" onClick={() => !isProcessingDraftAction && setConfirmingDraftPick(null)}>
+              <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: '480px' }}>
+                <div className="modal-header">
+                  <h3 style={{ margin: 0, color: 'var(--pine-deep)', fontSize: '1.2rem' }}>Confirm Draft Pick</h3>
+                  <button className="modal-close-btn" onClick={() => !isProcessingDraftAction && setConfirmingDraftPick(null)}>✕</button>
+                </div>
+                <div className="modal-body" style={{ padding: '1.25rem' }}>
+                  <p style={{ fontSize: '1.05rem', marginBottom: '1rem', lineHeight: '1.5' }}>
+                    Are you sure you want to draft <strong>{confirmingDraftPick.item.title}</strong>
+                    {confirmingDraftPick.item.value ? ` (Value: ${confirmingDraftPick.item.value.startsWith('$') ? confirmingDraftPick.item.value : '$' + confirmingDraftPick.item.value})` : ''} to <strong>{confirmingDraftPick.picker.name}</strong>?
+                  </p>
+                  <div style={{ background: '#f4f8f5', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.85rem', fontSize: '0.85rem', color: 'var(--pine-deep)', marginBottom: '1.25rem' }}>
+                    📌 <strong>What happens when confirmed:</strong>
+                    <ul style={{ margin: '0.4rem 0 0 1.2rem', padding: 0 }}>
+                      <li>Item will be assigned to {confirmingDraftPick.picker.name} and locked from future draft picks.</li>
+                      <li>All prior interest records are permanently preserved in historical data.</li>
+                      <li>Transaction is recorded in the permanent Draft History log.</li>
+                      <li>Draft immediately advances to the next cousin.</li>
+                    </ul>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                    <button className="btn-outline" onClick={() => setConfirmingDraftPick(null)} disabled={isProcessingDraftAction}>Cancel</button>
+                    <button className="btn-green-senior" style={{ minHeight: '44px', padding: '0.6rem 1.25rem' }} onClick={handleExecuteDraftPick} disabled={isProcessingDraftAction}>
+                      {isProcessingDraftAction ? 'Processing Pick...' : '✅ Confirm Draft Pick'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* CONFIRM REVERSE PICK MODAL */}
+          {confirmingReversePick && (
+            <div className="modal-overlay" onClick={() => !isProcessingDraftAction && setConfirmingReversePick(null)}>
+              <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: '480px' }}>
+                <div className="modal-header">
+                  <h3 style={{ margin: 0, color: '#d32f2f', fontSize: '1.2rem' }}>⚠️ Reverse Draft Pick</h3>
+                  <button className="modal-close-btn" onClick={() => !isProcessingDraftAction && setConfirmingReversePick(null)}>✕</button>
+                </div>
+                <div className="modal-body" style={{ padding: '1.25rem' }}>
+                  <p style={{ fontSize: '1rem', marginBottom: '1rem', lineHeight: '1.5' }}>
+                    Are you sure you want to reverse Pick #{confirmingReversePick.pick_number} (<strong>{confirmingReversePick.item_title}</strong> to <strong>{confirmingReversePick.user_name}</strong>)?
+                  </p>
+                  <div style={{ background: '#ffebee', border: '1px solid #ffcdd2', borderRadius: '8px', padding: '0.85rem', fontSize: '0.85rem', color: '#b71c1c', marginBottom: '1.25rem' }}>
+                    ⚠️ <strong>Permanent Audit Trail:</strong>
+                    <ul style={{ margin: '0.4rem 0 0 1.2rem', padding: 0 }}>
+                      <li>The item will become available for drafting again.</li>
+                      <li>This record is <strong>NOT</strong> deleted — the correction will be permanently marked in Draft History and logged in the estate audit trail with your admin ID and timestamp.</li>
+                    </ul>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                    <button className="btn-outline" onClick={() => setConfirmingReversePick(null)} disabled={isProcessingDraftAction}>Cancel</button>
+                    <button className="btn-outline" style={{ background: '#d32f2f', color: '#fff', borderColor: '#d32f2f', minHeight: '44px', padding: '0.6rem 1.25rem', fontWeight: 'bold' }} onClick={handleExecuteReversePick} disabled={isProcessingDraftAction}>
+                      {isProcessingDraftAction ? 'Reversing...' : '⚠️ Confirm Reversal'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ADMIN REORDER DRAFT MODAL */}
+          {isReorderingDraft && (
+            <div className="modal-overlay" onClick={() => !isProcessingDraftAction && setIsReorderingDraft(false)}>
+              <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: '480px' }}>
+                <div className="modal-header">
+                  <h3 style={{ margin: 0, color: 'var(--pine-deep)', fontSize: '1.2rem' }}>⚙️ Establish Draft Order</h3>
+                  <button className="modal-close-btn" onClick={() => !isProcessingDraftAction && setIsReorderingDraft(false)}>✕</button>
+                </div>
+                <div className="modal-body" style={{ padding: '1.25rem' }}>
+                  <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+                    Use the arrows to set the draft order for all participants. The draft follows this order each round.
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.25rem' }}>
+                    {reorderOrder.map((userId, idx) => {
+                      const participant = draftState.draftOrder.find(d => d.user_id === userId) || usersList.find(u => u.id === userId);
+                      return (
+                        <div key={userId} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', background: '#f8faf9', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.5rem 0.85rem' }}>
+                          <span style={{ fontWeight: 'bold', width: '24px', color: 'var(--pine-primary)' }}>{idx + 1}.</span>
+                          <span style={{ flex: 1, fontWeight: '500' }}>{participant?.name || userId}</span>
+                          <button
+                            type="button"
+                            className="btn-outline"
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem', minHeight: '32px' }}
+                            disabled={idx === 0}
+                            onClick={() => {
+                              const next = [...reorderOrder];
+                              const temp = next[idx - 1];
+                              next[idx - 1] = next[idx];
+                              next[idx] = temp;
+                              setReorderOrder(next);
+                            }}
+                          >
+                            ▲
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-outline"
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem', minHeight: '32px' }}
+                            disabled={idx === reorderOrder.length - 1}
+                            onClick={() => {
+                              const next = [...reorderOrder];
+                              const temp = next[idx + 1];
+                              next[idx + 1] = next[idx];
+                              next[idx] = temp;
+                              setReorderOrder(next);
+                            }}
+                          >
+                            ▼
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                    <button className="btn-outline" onClick={() => setIsReorderingDraft(false)} disabled={isProcessingDraftAction}>Cancel</button>
+                    <button className="btn-green" onClick={handleSaveDraftOrder} disabled={isProcessingDraftAction}>
+                      {isProcessingDraftAction ? 'Saving...' : '💾 Save Draft Order'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1987,6 +2848,33 @@ export default function App() {
                     <option value="Donated">Donated</option>
                   </select>
                 </div>
+
+                <div className="form-field-group">
+                  <label className="form-field-label">Institutional Candidate</label>
+                  <select
+                    className="form-field-select"
+                    value={editFormInstitutionalCandidate}
+                    onChange={(e) => setEditFormInstitutionalCandidate(e.target.value)}
+                  >
+                    <option value="None">None</option>
+                    <option value="Manitowish Waters Library">Manitowish Waters Library</option>
+                    <option value="Maritime Museum">Maritime Museum</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+
+                {editFormInstitutionalCandidate === 'Other' && (
+                  <div className="form-field-group">
+                    <label className="form-field-label">Custom Institution Name</label>
+                    <input
+                      type="text"
+                      className="form-field-input"
+                      placeholder="e.g. Northwoods Historical Society"
+                      value={editFormInstitutionalName}
+                      onChange={(e) => setEditFormInstitutionalName(e.target.value)}
+                    />
+                  </div>
+                )}
 
                 <div className="form-field-group">
                   <label className="form-field-label">Location in Estate</label>
