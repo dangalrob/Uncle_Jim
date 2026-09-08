@@ -455,6 +455,59 @@ export default function App() {
     }
   };
 
+  const handleReleaseItem = async (itemId) => {
+    try {
+      const res = await fetch(`/api/items/${itemId}/release`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        if (adminEditingItem && adminEditingItem.id === itemId) {
+          setEditFormStatus('released');
+          setAdminEditingItem(prev => (prev ? { ...prev, status: 'released' } : prev));
+        }
+        setSelectedItem(prev => (prev && prev.id === itemId ? { ...prev, status: 'released' } : prev));
+        await fetchItems();
+        await fetchDashboardStats();
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to release item.");
+      }
+    } catch (err) {
+      console.error("Error releasing item:", err);
+      alert("Error releasing item.");
+    }
+  };
+
+  const handleUnreleaseItem = async (itemId) => {
+    const confirmed = window.confirm(
+      "Are you sure you want to unrelease this item? It will no longer be visible to family members in the catalog."
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`/api/items/${itemId}/unrelease`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        if (adminEditingItem && adminEditingItem.id === itemId) {
+          setEditFormStatus('draft');
+          setAdminEditingItem(prev => (prev ? { ...prev, status: 'draft' } : prev));
+        }
+        setSelectedItem(prev => (prev && prev.id === itemId ? { ...prev, status: 'draft' } : prev));
+        await fetchItems();
+        await fetchDashboardStats();
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to unrelease item.");
+      }
+    } catch (err) {
+      console.error("Error unreleasing item:", err);
+      alert("Error unreleasing item.");
+    }
+  };
+
   const handleSaveItemEdits = async () => {
     if (!adminEditingItem) return;
     setIsSavingItemEdits(true);
@@ -1469,6 +1522,25 @@ export default function App() {
                           )}
                         </div>
 
+                        {/* Admin Release Status Badge */}
+                        {currentUser?.role === 'admin' && (
+                          <div style={{ alignSelf: 'flex-start', marginTop: '4px' }}>
+                            {item.status === 'released' ? (
+                              <span className="badge-status badge-released" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
+                                ✅ Released for Review
+                              </span>
+                            ) : item.status === 'assigned' || item.status === 'completed' ? (
+                              <span className="badge-status badge-assigned" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
+                                🔒 Assigned
+                              </span>
+                            ) : (
+                              <span className="badge-status" style={{ fontSize: '0.72rem', padding: '2px 8px', background: '#fff3e0', color: '#e65100', border: '1px solid #ffe0b2', fontWeight: 'bold' }}>
+                                ⏳ Not Released
+                              </span>
+                            )}
+                          </div>
+                        )}
+
                         {/* Institutional Candidate Badge */}
                         {item.institutional_candidate && item.institutional_candidate !== 'None' && (
                           <div style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '2px 8px', borderRadius: '4px', marginTop: '4px' }}>
@@ -1545,16 +1617,45 @@ export default function App() {
                 <div className="review-top-bar">
                   <button className="btn-outline" onClick={() => setCurrentView('catalog')}><ArrowLeft size={16} /> Back to Browse</button>
                   <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>Item {(reviewIndex % Math.max(1, items.length)) + 1} of {items.length || 1}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                     {currentUser?.role === 'admin' && currentReviewItem && (
-                      <button
-                        className="btn-outline"
-                        style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem', color: 'var(--pine-primary)', borderColor: 'var(--pine-primary)', display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 'bold' }}
-                        onClick={() => handleStartEditItem(currentReviewItem)}
-                        title="Edit this item and its pictures"
-                      >
-                        <Edit3 size={15} /> Edit Item & Pictures
-                      </button>
+                      <>
+                        {currentReviewItem.status === 'released' ? (
+                          <>
+                            <span className="badge-status badge-released" style={{ fontSize: '0.82rem', padding: '0.35rem 0.65rem' }}>
+                              Released for Review
+                            </span>
+                            <button
+                              className="btn-outline"
+                              style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem', color: '#c62828', borderColor: '#ef9a9a', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                              onClick={() => handleUnreleaseItem(currentReviewItem.id)}
+                            >
+                              ↩️ Unrelease Item
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="badge-status" style={{ fontSize: '0.82rem', padding: '0.35rem 0.65rem', background: '#fff3e0', color: '#e65100', border: '1px solid #ffe0b2', fontWeight: 'bold' }}>
+                              Not Released
+                            </span>
+                            <button
+                              className="btn-green"
+                              style={{ padding: '0.4rem 0.85rem', fontSize: '0.85rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                              onClick={() => handleReleaseItem(currentReviewItem.id)}
+                            >
+                              🚀 Release for Family Review
+                            </button>
+                          </>
+                        )}
+                        <button
+                          className="btn-outline"
+                          style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem', color: 'var(--pine-primary)', borderColor: 'var(--pine-primary)', display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 'bold' }}
+                          onClick={() => handleStartEditItem(currentReviewItem)}
+                          title="Edit this item and its pictures"
+                        >
+                          <Edit3 size={15} /> Edit Item & Pictures
+                        </button>
+                      </>
                     )}
                     <button className="btn-outline" style={{ padding: '0.4rem 0.6rem' }} onClick={() => { setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev - 1 + Math.max(1, items.length)) % Math.max(1, items.length)); }} title="Previous Item"><ArrowLeft size={16} /></button>
                     <button className="btn-outline" style={{ padding: '0.4rem 0.6rem' }} onClick={() => { setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev + 1) % Math.max(1, items.length)); }} title="Next Item"><ArrowRight size={16} /></button>
@@ -2720,6 +2821,90 @@ export default function App() {
             </div>
 
             <div className="modal-body">
+              {/* Item Release Status & Workflow Control */}
+              <div style={{
+                marginBottom: '1.25rem',
+                padding: '1rem',
+                borderRadius: '10px',
+                border: editFormStatus === 'released' ? '1px solid #c8e6c9' : '1px solid #ffe0b2',
+                background: editFormStatus === 'released' ? '#f1f8e9' : '#fff8e1',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '0.85rem'
+              }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      Family Visibility:
+                    </span>
+                    {editFormStatus === 'released' ? (
+                      <span className="badge-status badge-released" style={{ fontSize: '0.85rem', padding: '0.25rem 0.65rem' }}>
+                        Released for Review
+                      </span>
+                    ) : (
+                      <span className="badge-status" style={{ fontSize: '0.85rem', padding: '0.25rem 0.65rem', background: '#fff3e0', color: '#e65100', border: '1px solid #ffe0b2', fontWeight: 'bold' }}>
+                        Not Released
+                      </span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: '0.84rem', color: editFormStatus === 'released' ? '#2e7d32' : '#b78103' }}>
+                    {editFormStatus === 'released'
+                      ? 'Visible to family members when browsing the estate inventory.'
+                      : 'Hidden from standard family users until released for review.'}
+                  </span>
+                </div>
+
+                <div style={{ width: '100%', maxWidth: '320px' }}>
+                  {editFormStatus === 'released' ? (
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      style={{
+                        width: '100%',
+                        minHeight: '48px',
+                        padding: '0 1rem',
+                        fontSize: '0.92rem',
+                        fontWeight: 'bold',
+                        color: '#c62828',
+                        borderColor: '#ef9a9a',
+                        background: '#fff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.4rem',
+                        cursor: 'pointer'
+                      }}
+                      onClick={() => handleUnreleaseItem(adminEditingItem.id)}
+                    >
+                      ↩️ Unrelease Item
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn-green"
+                      style={{
+                        width: '100%',
+                        minHeight: '48px',
+                        padding: '0 1.25rem',
+                        fontSize: '0.95rem',
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.45rem',
+                        boxShadow: '0 2px 6px rgba(46,125,50,0.3)',
+                        cursor: 'pointer'
+                      }}
+                      onClick={() => handleReleaseItem(adminEditingItem.id)}
+                    >
+                      🚀 Release for Family Review
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Photo Management Section */}
               <div style={{ marginBottom: '1.5rem', background: '#fcfbf7', border: '1px solid #ebd8be', padding: '1rem', borderRadius: '10px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', gap: '0.5rem' }}>
@@ -2840,12 +3025,9 @@ export default function App() {
                     value={editFormStatus}
                     onChange={(e) => setEditFormStatus(e.target.value)}
                   >
-                    <option value="Available">Available</option>
-                    <option value="Under Review">Under Review</option>
-                    <option value="Claimed">Claimed</option>
-                    <option value="Reserved">Reserved</option>
-                    <option value="Sold">Sold</option>
-                    <option value="Donated">Donated</option>
+                    <option value="draft">Not Released</option>
+                    <option value="released">Released for Review</option>
+                    <option value="assigned">Assigned</option>
                   </select>
                 </div>
 

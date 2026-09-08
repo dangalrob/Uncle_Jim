@@ -576,8 +576,8 @@ app.get('/api/items', authenticateToken, async (req, res) => {
     `;
     const params = [req.user.id, req.user.estate_id];
 
-    // Family reviewers can only see released or assigned items
-    if (req.user.role === 'reviewer') {
+    // Standard family users (non-admin) can only see released or assigned items
+    if (req.user.role !== 'admin') {
       query += ` AND i.status IN ('released', 'assigned', 'distributed', 'completed')`;
     } else if (status) {
       query += ` AND i.status = ?`;
@@ -634,6 +634,9 @@ app.get('/api/items/:id', authenticateToken, async (req, res) => {
     `, [req.params.id, req.user.estate_id]);
 
     if (!item) return res.status(404).json({ error: "Item not found" });
+    if (req.user.role !== 'admin' && !['released', 'assigned', 'distributed', 'completed'].includes(item.status)) {
+      return res.status(404).json({ error: "Item not found" });
+    }
 
     const photos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [item.id]);
     const stories = await dbAll(`SELECT * FROM item_stories WHERE item_id = ? ORDER BY created_at ASC`, [item.id]);
@@ -721,6 +724,42 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to update item" });
+  }
+});
+
+// Endpoint: Release single item for family review (Admin only)
+app.post('/api/items/:id/release', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const estateId = req.user.estate_id;
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    await dbRun(`UPDATE items SET status = 'released' WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    logAudit(estateId, req.user.id, 'RELEASE_ITEM', 'items', itemId, { previousStatus: item.status, newStatus: 'released', title: item.title });
+
+    res.json({ success: true, status: 'released', message: "Item released for family review" });
+  } catch (err) {
+    console.error("Release item error:", err);
+    res.status(500).json({ error: "Failed to release item" });
+  }
+});
+
+// Endpoint: Unrelease single item back to draft / Not Released (Admin only)
+app.post('/api/items/:id/unrelease', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const estateId = req.user.estate_id;
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    await dbRun(`UPDATE items SET status = 'draft' WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    logAudit(estateId, req.user.id, 'UNRELEASE_ITEM', 'items', itemId, { previousStatus: item.status, newStatus: 'draft', title: item.title });
+
+    res.json({ success: true, status: 'draft', message: "Item returned to Not Released" });
+  } catch (err) {
+    console.error("Unrelease item error:", err);
+    res.status(500).json({ error: "Failed to unrelease item" });
   }
 });
 
@@ -1425,14 +1464,19 @@ app.post('/api/items/batch-sync', authenticateToken, upload.array('photos', 20),
 // Endpoint: My Interested Items Report for Standard Users
 app.get('/api/reports/my-interests', authenticateToken, async (req, res) => {
   try {
-    const interests = await dbAll(`
+    let query = `
       SELECT i.id, i.title, i.category_id, i.location_in_house, i.description, int.interest_level, int.comment, int.created_at as marked_at,
              (SELECT photo_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC LIMIT 1) as primary_photo
       FROM interests int
       JOIN items i ON int.item_id = i.id
       WHERE int.user_id = ?
-      ORDER BY int.created_at DESC
-    `, [req.user.id]);
+    `;
+    const params = [req.user.id];
+    if (req.user.role !== 'admin') {
+      query += ` AND i.status IN ('released', 'assigned', 'distributed', 'completed')`;
+    }
+    query += ` ORDER BY int.created_at DESC`;
+    const interests = await dbAll(query, params);
     res.json(interests);
   } catch (err) {
     console.error(err);
