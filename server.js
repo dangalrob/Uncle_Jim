@@ -180,6 +180,7 @@ async function initDatabase() {
     db.run(`ALTER TABLE items ADD COLUMN value TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN institutional_candidate TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN institutional_name TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN client_id TEXT`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS draft_order (
       estate_id TEXT NOT NULL,
@@ -500,9 +501,10 @@ app.post('/api/auth/logout', (req, res) => {
 // ----------------------------------------------------
 app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'contributor']), upload.any(), async (req, res) => {
   try {
-    const { title, locationInHouse, categoryId, description, notes, value, institutionalCandidate, institutionalName } = req.body;
-    const itemId = 'item_' + Date.now();
-    const itemNumber = 'UJ-' + Math.floor(100 + Math.random() * 900);
+    const { title, locationInHouse, categoryId, description, notes, value, institutionalCandidate, institutionalName, clientId } = req.body;
+    const clientIdParam = (clientId || req.body.client_id || '').trim();
+    let itemId = 'item_' + Date.now();
+    let itemNumber = 'UJ-' + Math.floor(100 + Math.random() * 900);
     const itemTitle = (title !== undefined && title !== null) ? title.trim() : '';
     const itemLocation = (locationInHouse !== undefined && locationInHouse !== null) ? locationInHouse.trim() : '';
     const itemDesc = (description || notes || '').trim();
@@ -510,17 +512,37 @@ app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'c
     const instCandidate = (institutionalCandidate || 'None').trim();
     const instName = (institutionalName || '').trim();
 
-    await dbRun(
-      `INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, description, value, status, institutional_candidate, institutional_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
-      [itemId, req.user.estate_id, itemNumber, itemTitle, categoryId || null, itemLocation || null, itemDesc || null, itemValue || null, instCandidate, instName || null]
-    );
+    let existingItem = null;
+    if (clientIdParam) {
+      existingItem = await dbGet(`SELECT * FROM items WHERE client_id = ? OR id = ?`, [clientIdParam, clientIdParam]);
+    }
+
+    if (existingItem) {
+      itemId = existingItem.id;
+      itemNumber = existingItem.item_number;
+      await dbRun(
+        `UPDATE items SET title = ?, category_id = ?, location_in_house = ?, description = ?, value = ?, institutional_candidate = ?, institutional_name = ? WHERE id = ?`,
+        [itemTitle, categoryId || null, itemLocation || null, itemDesc || null, itemValue || null, instCandidate, instName || null, itemId]
+      );
+    } else {
+      await dbRun(
+        `INSERT INTO items (id, estate_id, item_number, title, category_id, location_in_house, description, value, status, institutional_candidate, institutional_name, client_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
+        [itemId, req.user.estate_id, itemNumber, itemTitle, categoryId || null, itemLocation || null, itemDesc || null, itemValue || null, instCandidate, instName || null, clientIdParam || null]
+      );
+    }
 
     const savedPhotos = [];
     const allFiles = req.files || [];
     const originalFiles = allFiles.filter(f => f.fieldname === 'photos');
     const croppedFiles = allFiles.filter(f => f.fieldname === 'croppedPhotos' || f.fieldname === 'croppedPhoto');
 
+    const existingPhotos = existingItem
+      ? await dbAll(`SELECT id, photo_url, thumbnail_url, is_primary FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId])
+      : [];
+
     if (originalFiles.length > 0) {
+      // If we are uploading new photos for an existing item, remove older placeholder/unwanted photos if replacing,
+      // or append if new. If existing photos already exist and we receive new files, we can insert them.
       for (let i = 0; i < originalFiles.length; i++) {
         const file = originalFiles[i];
         const croppedFile = croppedFiles[i] || (i === 0 ? croppedFiles[0] : null);
@@ -537,22 +559,36 @@ app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'c
         const photoUrl = `/uploads/full/${file.filename}`;
         const thumbnailUrl = `/uploads/thumbs/${thumbFilename}`;
         const photoId = 'photo_' + Date.now() + '_' + i;
-        const isPrimary = i === 0 ? 1 : 0;
+        const isPrimary = (existingPhotos.length === 0 && i === 0) ? 1 : 0;
 
         await dbRun(
           `INSERT INTO item_photos (id, item_id, photo_url, thumbnail_url, is_primary, display_order) VALUES (?, ?, ?, ?, ?, ?)`,
-          [photoId, itemId, photoUrl, thumbnailUrl, isPrimary, i]
+          [photoId, itemId, photoUrl, thumbnailUrl, isPrimary, existingPhotos.length + i]
         );
 
-        savedPhotos.push({ id: photoId, photoUrl, thumbnailUrl, isPrimary });
+        savedPhotos.push({ id: photoId, photo_url: photoUrl, thumbnail_url: thumbnailUrl, photoUrl, thumbnailUrl, isPrimary });
       }
     }
 
     logAudit(req.user.estate_id, req.user.id, 'RAPID_CAPTURE_ITEM', 'items', itemId, { title: itemTitle, photosCount: savedPhotos.length });
 
+    const finalPhotos = savedPhotos.length > 0 ? savedPhotos : existingPhotos;
+    const primaryPhoto = finalPhotos[0]?.photo_url || finalPhotos[0]?.photoUrl || null;
+    const primaryThumb = finalPhotos[0]?.thumbnail_url || finalPhotos[0]?.thumbnailUrl || null;
+
     res.json({
       success: true,
-      item: { id: itemId, itemNumber, title: itemTitle, status: 'draft', photos: savedPhotos }
+      item: {
+        id: itemId,
+        clientId: clientIdParam || null,
+        item_number: itemNumber,
+        itemNumber,
+        title: itemTitle,
+        status: existingItem ? existingItem.status : 'draft',
+        photos: finalPhotos,
+        primary_photo: primaryPhoto,
+        primary_thumb: primaryThumb
+      }
     });
   } catch (err) {
     console.error("Rapid capture error:", err);

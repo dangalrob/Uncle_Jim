@@ -12,6 +12,17 @@ import AdminWorkbench from './components/AdminWorkbench';
 import InstitutionPortal from './components/InstitutionPortal';
 import PhotoCropperModal from './components/PhotoCropperModal';
 
+export function getGreeting(date = new Date()) {
+  const hour = date.getHours();
+  if (hour < 12) {
+    return 'Good morning';
+  } else if (hour < 17) {
+    return 'Good afternoon';
+  } else {
+    return 'Good evening';
+  }
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [currentView, setCurrentView] = useState('login'); // Default to login state until auth check completes
@@ -101,8 +112,20 @@ export default function App() {
   };
 
   // Offline Mode & Staging State
-  const [offlineMode, setOfflineMode] = useState(false);
+  const [offlineMode, setOfflineMode] = useState(() => {
+    return localStorage.getItem('uj_offline_mode') === 'true';
+  });
   const [stagedItems, setStagedItems] = useState([]);
+  const [savedWasOffline, setSavedWasOffline] = useState(false);
+  const [syncProgress, setSyncProgress] = useState({
+    isSyncing: false,
+    waitingForConnection: false,
+    total: 0,
+    completed: 0,
+    remaining: 0,
+    failed: 0,
+    message: null
+  });
   const [isSyncing, setIsSyncing] = useState(false);
   const [myInterests, setMyInterests] = useState([]);
   
@@ -176,6 +199,13 @@ export default function App() {
     if (!window.confirm("Are you sure you want to delete this item? This action cannot be undone.")) return;
     
     try {
+      if (String(itemId).startsWith('offline_') || String(itemId).startsWith('staged_')) {
+        await offlineStorage.deleteStagedItem(itemId);
+        await fetchItems();
+        await loadStagedQueue();
+        return;
+      }
+
       const res = await fetch(`/api/items/${itemId}`, {
         method: 'DELETE'
       });
@@ -219,17 +249,35 @@ export default function App() {
     }
   }, [currentUser, currentView]);
 
-  // Auto-engage iPhone camera file picker when entering Add Item view
+  // Restore in-progress capture draft when entering Add Item view
   useEffect(() => {
-    if (currentView === 'capture' && captureStep === 'take_photo' && capturedPhotos.length === 0) {
-      const timer = setTimeout(() => {
-        if (cameraInputRef.current) {
-          cameraInputRef.current.click();
+    const restoreActiveDraft = async () => {
+      if (currentView === 'capture' && capturedPhotos.length === 0) {
+        const draft = await offlineStorage.getActiveDraft();
+        if (draft && draft.photos && draft.photos.length > 0) {
+          const restored = draft.photos.map(p => ({
+            ...p,
+            file: p.data || p.file,
+            data: p.data || p.file,
+            url: p.data ? URL.createObjectURL(p.data) : (p.url || p.previewUrl)
+          }));
+          setCapturedPhotos(restored);
+          if (draft.croppedBlob) {
+            setCroppedPhotoBlob(draft.croppedBlob);
+            setCroppedPhotoPreview(URL.createObjectURL(draft.croppedBlob));
+          }
+          if (draft.title) setItemTitle(draft.title);
+          if (draft.categoryId) setItemCategory(draft.categoryId);
+          if (draft.locationInHouse) setItemLocation(draft.locationInHouse);
+          if (draft.notes) setItemNotes(draft.notes);
+          if (draft.value) setItemValue(draft.value);
+          setCaptureStep(draft.captureStep || 'enter_details');
         }
-      }, 350);
-      return () => clearTimeout(timer);
-    }
-  }, [currentView, captureStep, capturedPhotos]);
+      }
+    };
+    restoreActiveDraft();
+  }, [currentView]);
+
 
   const checkAuth = async () => {
     try {
@@ -237,10 +285,22 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setCurrentUser(data.user);
+        localStorage.setItem('uj_user', JSON.stringify(data.user));
+        setCurrentView(prev => (prev === 'login' ? (data.user.role === 'admin' ? 'dashboard' : 'review') : prev));
       } else {
+        localStorage.removeItem('uj_user');
         setCurrentView('login');
       }
     } catch (err) {
+      const cachedUser = localStorage.getItem('uj_user');
+      if (cachedUser) {
+        try {
+          const user = JSON.parse(cachedUser);
+          setCurrentUser(user);
+          setCurrentView(prev => (prev === 'login' ? (user.role === 'admin' ? 'dashboard' : 'review') : prev));
+          return;
+        } catch (e) {}
+      }
       setCurrentView('login');
     }
   };
@@ -255,6 +315,7 @@ export default function App() {
       const data = await res.json();
       if (res.ok) {
         setCurrentUser(data.user);
+        localStorage.setItem('uj_user', JSON.stringify(data.user));
         if (data.user.role === 'admin') setCurrentView('dashboard');
         else setCurrentView('review');
       } else {
@@ -266,20 +327,75 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    localStorage.removeItem('uj_user');
     setCurrentUser(null);
     setCurrentView('login');
   };
 
   const fetchItems = async () => {
+    let serverItems = [];
     try {
       let url = `/api/items?search=${encodeURIComponent(searchQuery)}`;
       if (categoryFilter) url += `&category=${categoryFilter}`;
       if (statusFilter) url += `&status=${statusFilter}`;
       const res = await fetch(url);
-      if (res.ok) setItems(await res.json());
+      if (res.ok) serverItems = await res.json();
     } catch (err) {
-      console.error(err);
+      console.warn("Could not fetch server items (may be offline):", err);
+    }
+
+    try {
+      const staged = await offlineStorage.getStagedItems();
+      setStagedItems(staged || []);
+
+      const offlineFormatted = (staged || []).map(st => {
+        let photoUrl = null;
+        if (st.croppedBlob) {
+          photoUrl = URL.createObjectURL(st.croppedBlob);
+        } else if (st.photos && st.photos.length > 0 && st.photos[0].data) {
+          photoUrl = URL.createObjectURL(st.photos[0].data);
+        }
+
+        return {
+          id: st.id,
+          clientId: st.clientId || st.id,
+          item_number: '(Offline Draft)',
+          itemNumber: '(Offline Draft)',
+          title: st.title || 'Untitled Offline Item',
+          category_id: st.categoryId,
+          category_name: categories.find(c => c.id === st.categoryId)?.name || st.category_name || 'Uncategorized',
+          value: st.value,
+          location_in_house: st.locationInHouse,
+          description: st.description || st.notes,
+          notes: st.notes,
+          condition: st.condition || '',
+          dimensions: st.dimensions || '',
+          weight: st.weight || '',
+          status: 'draft',
+          institutional_candidate: st.institutionalCandidate || 'None',
+          institutional_name: st.institutionalName || '',
+          is_offline: true,
+          sync_status: st.syncStatus || 'pending',
+          sync_error: st.syncError,
+          primary_photo: photoUrl || OFFLINE_THUMB,
+          primary_thumb: photoUrl || OFFLINE_THUMB,
+          photos: st.photos || [],
+          croppedBlob: st.croppedBlob || null
+        };
+      });
+
+      const filteredOffline = offlineFormatted.filter(item => {
+        if (searchQuery && !item.title.toLowerCase().includes(searchQuery.toLowerCase()) && !item.description?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+        if (categoryFilter && item.category_id !== categoryFilter) return false;
+        if (statusFilter && statusFilter !== 'draft') return false;
+        return true;
+      });
+
+      setItems([...filteredOffline, ...serverItems]);
+    } catch (dbErr) {
+      console.error("Error reading staged items from IndexedDB:", dbErr);
+      setItems(serverItems);
     }
   };
 
@@ -310,24 +426,60 @@ export default function App() {
     }
   };
 
-
-
-  const handlePhotosSelected = (e) => {
+  const handlePhotosSelected = async (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length > 0) {
       const newPhotos = files.map(file => ({
         file,
+        data: file,
+        name: file.name,
+        type: file.type,
         url: URL.createObjectURL(file)
       }));
-      setCapturedPhotos(prev => [...prev, ...newPhotos]);
+      const updatedPhotos = [...capturedPhotos, ...newPhotos];
+      setCapturedPhotos(updatedPhotos);
       setCaptureStep('enter_details');
-    } else {
-      alert("Your phone's camera did not return the photo to the browser. This is a known Safari bug. Please try taking the photo again, or choose it from your Photo Library.");
+
+      // Persist active draft to IndexedDB immediately
+      await offlineStorage.saveActiveDraft({
+        photos: updatedPhotos.map(p => ({
+          name: p.name || p.file?.name || 'photo.jpg',
+          type: p.type || p.file?.type || 'image/jpeg',
+          data: p.data || p.file
+        })),
+        croppedBlob: croppedPhotoBlob,
+        title: itemTitle,
+        categoryId: itemCategory,
+        locationInHouse: itemLocation,
+        notes: itemNotes,
+        value: itemValue,
+        captureStep: 'enter_details'
+      });
     }
-    // Crucial fix: Reset the input value so subsequent camera captures 
-    // (which often have the same filename like "image.jpg") will trigger onChange again.
     e.target.value = null;
   };
+
+  useEffect(() => {
+    if (currentView === 'capture' && captureStep === 'enter_details') {
+      const timer = setTimeout(() => {
+        offlineStorage.saveActiveDraft({
+          photos: capturedPhotos.map(p => ({
+            name: p.name || p.file?.name || 'photo.jpg',
+            type: p.type || p.file?.type || 'image/jpeg',
+            data: p.data || p.file
+          })),
+          croppedBlob: croppedPhotoBlob,
+          title: itemTitle,
+          categoryId: itemCategory,
+          locationInHouse: itemLocation,
+          notes: itemNotes,
+          value: itemValue,
+          captureStep: 'enter_details'
+        });
+      }, 400);
+      return () => clearTimeout(timer);
+    }
+  }, [currentView, captureStep, capturedPhotos, croppedPhotoBlob, itemTitle, itemCategory, itemLocation, itemNotes, itemValue]);
 
   const handleTriggerCamera = () => {
     if (cameraInputRef.current) {
@@ -345,7 +497,47 @@ export default function App() {
     }
   };
 
-  const handleOpenCapture = () => {
+  const handleOpenCapture = async () => {
+    // Check if there is already an active draft with a photo
+    const draft = await offlineStorage.getActiveDraft();
+    if (draft && draft.photos && draft.photos.length > 0) {
+      const restored = draft.photos.map(p => ({
+        ...p,
+        file: p.data || p.file,
+        data: p.data || p.file,
+        url: p.data ? URL.createObjectURL(p.data) : (p.url || p.previewUrl)
+      }));
+      setCapturedPhotos(restored);
+      if (draft.croppedBlob) {
+        setCroppedPhotoBlob(draft.croppedBlob);
+        setCroppedPhotoPreview(URL.createObjectURL(draft.croppedBlob));
+      } else {
+        setCroppedPhotoBlob(null);
+        setCroppedPhotoPreview(null);
+      }
+      setItemTitle(draft.title || '');
+      setItemLocation(draft.locationInHouse || '');
+      setItemCategory(draft.categoryId || '');
+      setItemNotes(draft.notes || '');
+      setItemValue(draft.value || '');
+      setCaptureStep(draft.captureStep || 'enter_details');
+    } else {
+      setCapturedPhotos([]);
+      setCroppedPhotoBlob(null);
+      setCroppedPhotoPreview(null);
+      setItemTitle('');
+      setItemLocation('');
+      setItemCategory('');
+      setItemNotes('');
+      setItemValue('');
+      setCaptureStep('take_photo');
+    }
+    setCurrentView('capture');
+    setMobileNavOpen(false);
+  };
+
+  const handleCancelCapture = async () => {
+    await offlineStorage.clearActiveDraft();
     setCapturedPhotos([]);
     setCroppedPhotoBlob(null);
     setCroppedPhotoPreview(null);
@@ -355,16 +547,10 @@ export default function App() {
     setItemNotes('');
     setItemValue('');
     setCaptureStep('take_photo');
-    setCurrentView('capture');
-    setMobileNavOpen(false);
-    setTimeout(() => {
-      if (cameraInputRef.current) {
-        cameraInputRef.current.click();
-      }
-    }, 150);
+    handleNavigateHome();
   };
 
-  const handleSimulateCapture = () => {
+  const handleSimulateCapture = async () => {
     const samplePhotos = [
       { url: 'https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=600&q=80' },
       { url: 'https://images.unsplash.com/photo-1580481072645-022f9a6d8310?auto=format&fit=crop&w=600&q=80' }
@@ -372,6 +558,164 @@ export default function App() {
     setCapturedPhotos(prev => (prev.length > 0 ? prev : samplePhotos));
     setCaptureStep('enter_details');
   };
+
+  const triggerSyncOfflineItems = async () => {
+    if (!navigator.onLine) {
+      setSyncProgress({
+        isSyncing: false,
+        waitingForConnection: true,
+        total: 0,
+        completed: 0,
+        remaining: 0,
+        failed: 0,
+        message: "Waiting for network connection to upload offline items..."
+      });
+      window.addEventListener('online', () => triggerSyncOfflineItems(), { once: true });
+      return;
+    }
+
+    const staged = await offlineStorage.getStagedItems();
+    if (staged.length === 0) {
+      setSyncProgress({
+        isSyncing: false,
+        waitingForConnection: false,
+        total: 0,
+        completed: 0,
+        remaining: 0,
+        failed: 0,
+        message: null
+      });
+      return;
+    }
+
+    const total = staged.length;
+    let completed = 0;
+    let failed = 0;
+
+    setSyncProgress({
+      isSyncing: true,
+      waitingForConnection: false,
+      total,
+      completed: 0,
+      remaining: total,
+      failed: 0,
+      message: `Uploading offline items: 0 of ${total} complete — ${total} remaining`
+    });
+
+    for (let item of staged) {
+      try {
+        const formData = new FormData();
+        formData.append('clientId', item.id);
+        formData.append('title', item.title || '');
+        formData.append('locationInHouse', item.locationInHouse || '');
+        formData.append('categoryId', item.categoryId || '');
+        formData.append('description', item.description || item.notes || '');
+        formData.append('notes', item.notes || item.description || '');
+        formData.append('value', item.value || '');
+        formData.append('institutionalCandidate', item.institutionalCandidate || 'None');
+        formData.append('institutionalName', item.institutionalName || '');
+
+        if (item.photos && item.photos.length > 0) {
+          for (let p of item.photos) {
+            if (p.data) {
+              const fileObj = p.data instanceof File ? p.data : new File([p.data], p.name || 'photo.jpg', { type: p.type || 'image/jpeg' });
+              formData.append('photos', fileObj);
+            }
+          }
+        }
+
+        if (item.croppedBlob) {
+          formData.append('croppedPhotos', item.croppedBlob, 'cropped.webp');
+        }
+
+        const res = await fetch('/api/items/rapid-capture', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (res.ok) {
+          const result = await res.json();
+          if (result.success) {
+            // Remove from local IndexedDB only AFTER confirmed server success!
+            await offlineStorage.deleteStagedItem(item.id);
+            completed++;
+            const remaining = total - completed - failed;
+            setSyncProgress(prev => ({
+              ...prev,
+              completed,
+              remaining,
+              message: `Uploading offline items: ${completed} of ${total} complete — ${remaining} remaining`
+            }));
+
+            // Update item in local items state immediately so Upload Pending is removed without duplication
+            setItems(prevItems => prevItems.map(it => it.id === item.id ? {
+              ...result.item,
+              category_name: categories.find(c => c.id === result.item.category_id)?.name || it.category_name,
+              is_offline: false,
+              sync_status: 'synced'
+            } : it));
+          } else {
+            throw new Error(result.error || "Server rejected item");
+          }
+        } else {
+          throw new Error(`Server returned HTTP ${res.status}`);
+        }
+      } catch (itemErr) {
+        console.error("Failed to sync item:", item.id, itemErr);
+        failed++;
+        const remaining = total - completed - failed;
+        await offlineStorage.updateStagedItem({
+          ...item,
+          syncStatus: 'failed',
+          syncError: itemErr.message || "Network upload failed"
+        });
+        setSyncProgress(prev => ({
+          ...prev,
+          failed,
+          remaining,
+          message: `Uploading offline items: ${completed} of ${total} complete — ${remaining} remaining (${failed} failed)`
+        }));
+      }
+    }
+
+    await fetchItems();
+    await fetchDashboardStats();
+
+    if (failed === 0) {
+      setSyncProgress({
+        isSyncing: false,
+        waitingForConnection: false,
+        total,
+        completed,
+        remaining: 0,
+        failed: 0,
+        message: `🎉 All ${total} offline items uploaded successfully!`
+      });
+      setTimeout(() => {
+        setSyncProgress(prev => prev.isSyncing ? prev : { ...prev, message: null });
+      }, 4000);
+    } else {
+      setSyncProgress({
+        isSyncing: false,
+        waitingForConnection: false,
+        total,
+        completed,
+        remaining: 0,
+        failed,
+        message: `⚠️ ${failed} offline item(s) failed to upload. They remain saved locally and can be retried.`
+      });
+    }
+  };
+
+  const handleToggleOfflineMode = async () => {
+    const nextMode = !offlineMode;
+    setOfflineMode(nextMode);
+    localStorage.setItem('uj_offline_mode', nextMode ? 'true' : 'false');
+    if (!nextMode) {
+      await triggerSyncOfflineItems();
+    }
+  };
+
 
   const compressPhotoTo2048 = (file) => {
     return new Promise((resolve) => {
@@ -434,11 +778,16 @@ export default function App() {
     setEditFormDimensions(item.dimensions || '');
     setEditFormWeight(item.weight || '');
     setEditFormStatus(item.status || 'draft');
-    setEditFormDescription(item.description || item.special_handling_notes || '');
+    setEditFormDescription(item.description || item.special_handling_notes || item.notes || '');
     setEditFormStory(item.story || item.story_text || '');
-    setEditFormInstitutionalCandidate(item.institutional_candidate || 'None');
-    setEditFormInstitutionalName(item.institutional_name || '');
+    setEditFormInstitutionalCandidate(item.institutional_candidate || item.institutionalCandidate || 'None');
+    setEditFormInstitutionalName(item.institutional_name || item.institutionalName || '');
     setEditFormPhotos(item.photos || (item.primary_photo ? [{ id: 'prim', photo_url: item.primary_photo, thumbnail_url: item.primary_thumb || item.primary_photo, is_primary: 1 }] : []));
+
+    if (item.is_offline) {
+      // Offline item: local record already has all available details
+      return;
+    }
 
     try {
       const res = await fetch(`/api/items/${item.id}`);
@@ -522,6 +871,37 @@ export default function App() {
     if (!adminEditingItem) return;
     setIsSavingItemEdits(true);
     try {
+      if (adminEditingItem.is_offline) {
+        const existingStaged = await offlineStorage.getStagedItem(adminEditingItem.id);
+        const updatedRecord = {
+          ...(existingStaged || adminEditingItem),
+          title: editFormTitle,
+          categoryId: editFormCategory || null,
+          category_id: editFormCategory || null,
+          category_name: categories.find(c => c.id === editFormCategory)?.name || '',
+          value: editFormValue,
+          locationInHouse: editFormLocation,
+          location_in_house: editFormLocation,
+          condition: editFormCondition,
+          dimensions: editFormDimensions,
+          weight: editFormWeight,
+          status: editFormStatus,
+          description: editFormDescription,
+          notes: editFormDescription,
+          story: editFormStory,
+          institutionalCandidate: editFormInstitutionalCandidate,
+          institutional_candidate: editFormInstitutionalCandidate,
+          institutionalName: editFormInstitutionalCandidate === 'Other' ? editFormInstitutionalName : '',
+          institutional_name: editFormInstitutionalCandidate === 'Other' ? editFormInstitutionalName : '',
+          syncStatus: 'pending',
+          syncError: null
+        };
+        await offlineStorage.updateStagedItem(updatedRecord);
+        setAdminEditingItem(null);
+        await fetchItems();
+        return;
+      }
+
       const payload = {
         title: editFormTitle,
         categoryId: editFormCategory || null,
@@ -558,6 +938,7 @@ export default function App() {
       setIsSavingItemEdits(false);
     }
   };
+
 
   const fetchDraftData = async () => {
     try {
@@ -820,103 +1201,97 @@ export default function App() {
         if (p.file) {
           const compFile = await compressPhotoTo2048(p.file);
           compressedList.push({
+            name: compFile.name,
+            type: compFile.type,
             file: compFile,
+            data: compFile,
             url: URL.createObjectURL(compFile)
           });
+        } else if (p.data) {
+          compressedList.push(p);
         } else {
           compressedList.push(p);
         }
       }
 
       if (offlineMode) {
-        // Save locally to IndexedDB staging store on iPhone
+        setSavedWasOffline(true);
+        // Save locally to IndexedDB staging store
         await offlineStorage.saveStagedItem({
           title: itemTitle,
           locationInHouse: itemLocation,
           categoryId: itemCategory,
           notes: itemNotes,
-          value: itemValue
-        }, compressedList);
-        await loadStagedQueue();
+          value: itemValue,
+          institutionalCandidate: itemInstitutionalCandidate,
+          institutionalName: itemInstitutionalName
+        }, compressedList, croppedPhotoBlob);
+
+        await offlineStorage.clearActiveDraft();
+        await fetchItems();
         setCaptureStep('saved_confirmation');
         return;
       }
 
+      setSavedWasOffline(false);
       const formData = new FormData();
       formData.append('title', itemTitle);
       formData.append('locationInHouse', itemLocation);
       formData.append('categoryId', itemCategory);
       formData.append('notes', itemNotes);
       formData.append('value', itemValue);
+      formData.append('institutionalCandidate', itemInstitutionalCandidate);
+      formData.append('institutionalName', itemInstitutionalName);
+
       for (let p of compressedList) {
-        if (p.file) formData.append('photos', p.file);
+        if (p.file) {
+          formData.append('photos', p.file);
+        } else if (p.data) {
+          const fileObj = p.data instanceof File ? p.data : new File([p.data], p.name || 'photo.jpg', { type: p.type || 'image/jpeg' });
+          formData.append('photos', fileObj);
+        }
       }
       if (croppedPhotoBlob) {
         formData.append('croppedPhotos', croppedPhotoBlob, 'cropped.webp');
       }
 
-      await fetch('/api/items/rapid-capture', {
+      const res = await fetch('/api/items/rapid-capture', {
         method: 'POST',
         body: formData
       });
+
+      if (!res.ok) {
+        throw new Error("Server error during rapid capture");
+      }
+
+      await offlineStorage.clearActiveDraft();
+      setCaptureStep('saved_confirmation');
+      await fetchItems();
     } catch (err) {
+      console.warn("Rapid capture failed online, saving offline:", err);
       // Fallback to offline staging if network error occurs
+      setSavedWasOffline(true);
       await offlineStorage.saveStagedItem({
         title: itemTitle,
         locationInHouse: itemLocation,
         categoryId: itemCategory,
         notes: itemNotes,
-        value: itemValue
-      }, capturedPhotos);
-      await loadStagedQueue();
+        value: itemValue,
+        institutionalCandidate: itemInstitutionalCandidate,
+        institutionalName: itemInstitutionalName
+      }, capturedPhotos, croppedPhotoBlob);
+      await offlineStorage.clearActiveDraft();
+      await fetchItems();
+      setCaptureStep('saved_confirmation');
     } finally {
       setIsSavingItem(false);
     }
-    setCaptureStep('saved_confirmation');
-    fetchItems();
   };
 
   const handleSyncStagedBatch = async () => {
-    if (stagedItems.length === 0) return;
-    setIsSyncing(true);
-    try {
-      const formData = new FormData();
-      const itemsMeta = [];
-
-      for (let item of stagedItems) {
-        itemsMeta.push({
-          title: item.title,
-          locationInHouse: item.locationInHouse,
-          categoryId: item.categoryId,
-          notes: item.notes,
-          value: item.value
-        });
-        if (item.photos) {
-          for (let p of item.photos) {
-            if (p.data) formData.append('photos', p.data, p.name || 'staged.jpg');
-          }
-        }
-      }
-
-      formData.append('items', JSON.stringify(itemsMeta));
-
-      const res = await fetch('/api/items/batch-sync', {
-        method: 'POST',
-        body: formData
-      });
-
-      if (res.ok) {
-        await offlineStorage.clearStagedQueue();
-        await loadStagedQueue();
-        fetchItems();
-        alert(`🎉 Success! Synced ${stagedItems.length} staged items to estate cloud.`);
-      }
-    } catch (err) {
-      alert("Error syncing staged items. Please check Wi-Fi connection.");
-    } finally {
-      setIsSyncing(false);
-    }
+    await triggerSyncOfflineItems();
   };
+
 
   const handleSaveFamilyDecision = async (itemId) => {
     try {
@@ -1082,7 +1457,7 @@ export default function App() {
                 <button
                   className={`btn-outline ${offlineMode ? 'btn-amber-active' : ''}`}
                   style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
-                  onClick={() => setOfflineMode(!offlineMode)}
+                  onClick={handleToggleOfflineMode}
                 >
                   {offlineMode ? <WifiOff size={16} color="#d32f2f" /> : <Wifi size={16} color="#2e7d32" />}
                   <span>{offlineMode ? 'Offline Mode: ON' : 'Offline Mode: OFF'}</span>
@@ -1100,26 +1475,68 @@ export default function App() {
 
             {/* STATUS BANNER 1: OFFLINE MODE IS ACTIVE */}
             {offlineMode && (
-              <div style={{ background: '#fff3cd', color: '#664d03', borderBottom: '1px solid #ffecb5', padding: '0.6rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.88rem', fontWeight: 'bold' }}>
+              <div style={{ background: '#fff3cd', color: '#664d03', borderBottom: '1px solid #ffecb5', padding: '0.6rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.88rem', fontWeight: 'bold', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <WifiOff size={18} />
+                  <WifiOff size={18} color="#b45309" />
                   <span>⚡ OFFLINE MODE IS ON — Photos save directly to your iPhone storage without network calls.</span>
                 </div>
-                <button className="btn-outline" style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }} onClick={() => setOfflineMode(false)}>
+                <button className="btn-outline" style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem', background: '#fff' }} onClick={handleToggleOfflineMode}>
                   Turn OFF Offline Mode
                 </button>
               </div>
             )}
 
-            {/* STATUS BANNER 2: STAGED ITEMS PENDING UPLOAD */}
-            {!offlineMode && stagedItems.length > 0 && (
+            {/* STATUS BANNER 2: SYNC PROGRESS / CONNECTION / ERROR */}
+            {syncProgress.message && (
+              <div style={{
+                background: syncProgress.failed > 0 ? '#fee2e2' : (syncProgress.isSyncing ? '#eff6ff' : (syncProgress.waitingForConnection ? '#fef3c7' : '#d1e7dd')),
+                color: syncProgress.failed > 0 ? '#991b1b' : (syncProgress.isSyncing ? '#1e40af' : (syncProgress.waitingForConnection ? '#92400e' : '#0f5132')),
+                borderBottom: '1px solid rgba(0,0,0,0.1)',
+                padding: '0.65rem 1.5rem',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: '0.9rem',
+                fontWeight: 'bold',
+                flexWrap: 'wrap',
+                gap: '0.5rem'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {syncProgress.isSyncing ? (
+                    <Loader2 className="animate-spin" size={18} />
+                  ) : syncProgress.failed > 0 ? (
+                    <AlertCircle size={18} />
+                  ) : syncProgress.waitingForConnection ? (
+                    <WifiOff size={18} />
+                  ) : (
+                    <UploadCloud size={18} />
+                  )}
+                  <span>{syncProgress.message}</span>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  {(syncProgress.failed > 0 || syncProgress.waitingForConnection) && !syncProgress.isSyncing && (
+                    <button className="btn-green-senior" style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }} onClick={triggerSyncOfflineItems}>
+                      🔄 Retry Upload
+                    </button>
+                  )}
+                  {!syncProgress.isSyncing && (
+                    <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }} onClick={() => setSyncProgress(prev => ({ ...prev, message: null }))} title="Dismiss">
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* STATUS BANNER 3: STAGED ITEMS PENDING UPLOAD (IDLE) */}
+            {!offlineMode && !syncProgress.message && stagedItems.length > 0 && (
               <div style={{ background: '#d1e7dd', color: '#0f5132', borderBottom: '1px solid #badbcc', padding: '0.65rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem', fontWeight: 'bold' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <UploadCloud size={20} />
-                  <span>📶 Wi-Fi CONNECTED — {stagedItems.length} Staged Items Ready to Upload to Cloud.</span>
+                  <span>📶 Wi-Fi CONNECTED — {stagedItems.length} Offline Item(s) Ready to Upload.</span>
                 </div>
-                <button className="btn-green-senior" style={{ fontSize: '0.85rem', padding: '0.4rem 1rem' }} onClick={handleSyncStagedBatch} disabled={isSyncing}>
-                  {isSyncing ? 'Uploading...' : `📤 UPLOAD BATCH (${stagedItems.length} ITEMS)`}
+                <button className="btn-green-senior" style={{ fontSize: '0.85rem', padding: '0.4rem 1rem' }} onClick={triggerSyncOfflineItems} disabled={syncProgress.isSyncing}>
+                  {syncProgress.isSyncing ? 'Uploading...' : `📤 UPLOAD NOW (${stagedItems.length} ITEMS)`}
                 </button>
               </div>
             )}
@@ -1150,33 +1567,69 @@ export default function App() {
                 <div className="login-test-accounts-box" style={{ background: 'var(--bg-subtle)', padding: '0.75rem 0.85rem', borderRadius: '8px', marginBottom: '1.25rem', border: '1px solid var(--border-color)' }}>
                   <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--pine-primary)', marginBottom: '0.45rem', letterSpacing: '0.5px' }}>⚡ QUICK TEST LOGIN ACCOUNTS:</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
-                    {demoUsers.map((u, idx) => (
-                      <button key={idx} className="btn-outline" style={{ fontSize: '0.74rem', minHeight: '38px', padding: '0.35rem 0.5rem', justifyContent: 'flex-start' }} onClick={() => handleLogin(u.email, 'password123')}>
-                        {u.badge}
-                      </button>
-                    ))}
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
+                      onClick={() => { setLoginEmail('dan@example.com'); setLoginPassword('password123'); handleLogin('dan@example.com', 'password123'); }}
+                    >
+                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>🔑 Dan (Admin)</span>
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>dan@example.com</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
+                      onClick={() => { setLoginEmail('mary@example.com'); setLoginPassword('password123'); handleLogin('mary@example.com', 'password123'); }}
+                    >
+                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>👤 Mary (Cousin)</span>
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>mary@example.com</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
+                      onClick={() => { setLoginEmail('john@example.com'); setLoginPassword('password123'); handleLogin('john@example.com', 'password123'); }}
+                    >
+                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>👤 John (Cousin)</span>
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>john@example.com</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
+                      onClick={() => { setLoginEmail('museum@example.com'); setLoginPassword('password123'); handleLogin('museum@example.com', 'password123'); }}
+                    >
+                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>🏛️ Maritime Museum</span>
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>museum@example.com</span>
+                    </button>
                   </div>
                 </div>
 
                 <form onSubmit={(e) => { e.preventDefault(); handleLogin(); }}>
                   <div style={{ marginBottom: '1rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.88rem', fontWeight: '600', marginBottom: '0.35rem', color: 'var(--pine-deep)' }}>Email</label>
+                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)', marginBottom: '0.3rem' }}>
+                      Email Address
+                    </label>
                     <input
                       type="email"
-                      style={{ width: '100%', minHeight: '48px', height: '48px', padding: '0 0.85rem', fontSize: '16px', borderRadius: '8px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
                       value={loginEmail}
-                      onChange={e=>setLoginEmail(e.target.value)}
-                      placeholder="dan@example.com"
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      placeholder="e.g. dan@example.com"
+                      style={{ width: '100%', minHeight: '48px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '16px', boxSizing: 'border-box' }}
                       required
                     />
                   </div>
                   <div style={{ marginBottom: '1.25rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.88rem', fontWeight: '600', marginBottom: '0.35rem', color: 'var(--pine-deep)' }}>Password</label>
+                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)', marginBottom: '0.3rem' }}>
+                      Password
+                    </label>
                     <input
                       type="password"
-                      style={{ width: '100%', minHeight: '48px', height: '48px', padding: '0 0.85rem', fontSize: '16px', borderRadius: '8px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
                       value={loginPassword}
-                      onChange={e=>setLoginPassword(e.target.value)}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      placeholder="••••••••"
+                      style={{ width: '100%', minHeight: '48px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '16px', boxSizing: 'border-box' }}
                       required
                     />
                   </div>
@@ -1197,7 +1650,7 @@ export default function App() {
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
                 <div>
-                  <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)' }}>Good morning, Dan</h1>
+                  <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)' }}>{getGreeting()}, {currentUser?.name ? currentUser.name.split(' ')[0] : 'Dan'}</h1>
                   <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Here's the latest indicative status of Uncle Jim's estate inventory.</p>
                 </div>
                 <button className="btn-green" onClick={handleOpenCapture}>
@@ -1425,7 +1878,7 @@ export default function App() {
                     <button className="btn-outline" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem', minHeight: '38px' }} onClick={() => setCaptureStep('add_more')}>
                       ← Back to Photos
                     </button>
-                    <button className="btn-outline" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem', minHeight: '38px' }} onClick={handleNavigateHome}>
+                    <button className="btn-outline" style={{ fontSize: '0.85rem', padding: '0.35rem 0.75rem', minHeight: '38px' }} onClick={handleCancelCapture}>
                       Cancel
                     </button>
                   </div>
@@ -1553,12 +2006,12 @@ export default function App() {
 
                   <div className="form-field-group">
                     <label className="form-field-label">Title (optional)</label>
-                    <input type="text" className="form-field-input" value={itemTitle} placeholder="e.g. Vintage Wooden Rocking Chair" onChange={e=>setItemTitle(e.target.value)} />
+                    <input type="text" className="form-field-input" value={itemTitle} placeholder="e.g. Vintage Wooden Rocking Chair" onChange={e => setItemTitle(e.target.value)} />
                   </div>
 
                   <div className="form-field-group">
                     <label className="form-field-label">Category (optional)</label>
-                    <select className="form-field-select" value={itemCategory} onChange={e=>setItemCategory(e.target.value)}>
+                    <select className="form-field-select" value={itemCategory} onChange={e => setItemCategory(e.target.value)}>
                       <option value="">-- Select Category (Optional) --</option>
                       {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
@@ -1566,17 +2019,17 @@ export default function App() {
 
                   <div className="form-field-group">
                     <label className="form-field-label">Estimated Value (optional)</label>
-                    <input type="text" className="form-field-input" value={itemValue} placeholder="e.g. $450" onChange={e=>setItemValue(e.target.value)} />
+                    <input type="text" className="form-field-input" value={itemValue} placeholder="e.g. $450" onChange={e => setItemValue(e.target.value)} />
                   </div>
 
                   <div className="form-field-group">
                     <label className="form-field-label">Quick Notes (optional)</label>
-                    <textarea className="form-field-textarea" rows="3" value={itemNotes} placeholder="General description, details, provenance notes..." onChange={e=>setItemNotes(e.target.value)}></textarea>
+                    <textarea className="form-field-textarea" rows="3" value={itemNotes} placeholder="General description, details, provenance notes..." onChange={e => setItemNotes(e.target.value)}></textarea>
                   </div>
 
                   <div className="form-field-group">
                     <label className="form-field-label">Location in House (optional)</label>
-                    <input type="text" className="form-field-input" value={itemLocation} placeholder="e.g. Living Room, Attic, Master Bedroom" onChange={e=>setItemLocation(e.target.value)} />
+                    <input type="text" className="form-field-input" value={itemLocation} placeholder="e.g. Living Room, Attic, Master Bedroom" onChange={e => setItemLocation(e.target.value)} />
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', marginTop: '1.5rem' }}>
@@ -1596,7 +2049,7 @@ export default function App() {
                       )}
                     </button>
 
-                    <button className="btn-modal-secondary" style={{ width: '100%', minHeight: '48px', justifyContent: 'center' }} onClick={handleNavigateHome}>
+                    <button className="btn-modal-secondary" style={{ width: '100%', minHeight: '48px', justifyContent: 'center' }} onClick={handleCancelCapture}>
                       Cancel & Return to Dashboard
                     </button>
                   </div>
@@ -1606,12 +2059,29 @@ export default function App() {
               {/* STEP 3D: NEW ITEM CREATED CONFIRMATION */}
               {captureStep === 'saved_confirmation' && (
                 <div style={{ padding: '2.5rem 1.5rem', textAlign: 'center' }}>
-                  <div className="check-circle-lg">✓</div>
-                  <h2 style={{ fontFamily: 'var(--font-heading)', color: 'var(--pine-deep)', fontSize: '1.6rem' }}>Item Saved!</h2>
-                  <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>Your item has been saved to the estate inventory queue.</p>
+                  <div className="check-circle-lg" style={{ background: savedWasOffline ? '#fff3cd' : '#d1e7dd', color: savedWasOffline ? '#b45309' : '#0f5132' }}>
+                    {savedWasOffline ? '⚡' : '✓'}
+                  </div>
+                  <h2 style={{ fontFamily: 'var(--font-heading)', color: 'var(--pine-deep)', fontSize: '1.6rem' }}>
+                    {savedWasOffline ? 'Item Saved Offline!' : 'Item Saved!'}
+                  </h2>
+                  <p style={{
+                    fontSize: '0.92rem',
+                    color: savedWasOffline ? '#856404' : 'var(--text-muted)',
+                    marginBottom: '1.5rem',
+                    background: savedWasOffline ? '#fff3cd' : 'transparent',
+                    padding: savedWasOffline ? '0.75rem 1rem' : '0',
+                    borderRadius: '8px',
+                    border: savedWasOffline ? '1px solid #ffeeba' : 'none',
+                    fontWeight: savedWasOffline ? '600' : 'normal'
+                  }}>
+                    {savedWasOffline
+                      ? 'Item saved offline. Photo and changes will upload when Offline Mode is turned off.'
+                      : 'Your item has been saved to the estate inventory queue.'}
+                  </p>
 
                   <div style={{ background: 'var(--bg-subtle)', padding: '1rem', borderRadius: '10px', display: 'flex', gap: '0.85rem', alignItems: 'center', marginBottom: '1.5rem', textAlign: 'left', border: '1px solid var(--border-color)' }}>
-                    <img src={capturedPhotos[0]?.url || OFFLINE_THUMB} style={{ width: '60px', height: '60px', objectFit: 'cover', borderRadius: '6px' }} />
+                    <img src={croppedPhotoPreview || capturedPhotos[0]?.url || OFFLINE_THUMB} style={{ width: '60px', height: '60px', objectFit: 'cover', borderRadius: '6px' }} />
                     <div>
                       <div style={{ fontWeight: 'bold', fontSize: '1rem' }}>{itemTitle || 'New Estate Item'}</div>
                       <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{capturedPhotos.length || 1} photo(s) saved</div>
@@ -1634,6 +2104,7 @@ export default function App() {
                   </div>
                 </div>
               )}
+
             </div>
           )}
 
@@ -1758,24 +2229,33 @@ export default function App() {
                           )}
                         </div>
 
-                        {/* Admin Release Status Badge */}
-                        {currentUser?.role === 'admin' && (
+                        {/* Offline Pending / Admin Release Status Badge */}
+                        {item.is_offline ? (
                           <div style={{ alignSelf: 'flex-start', marginTop: '4px' }}>
-                            {item.status === 'released' ? (
-                              <span className="badge-status badge-released" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
-                                ✅ Released for Review
-                              </span>
-                            ) : item.status === 'assigned' || item.status === 'completed' ? (
-                              <span className="badge-status badge-assigned" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
-                                🔒 Assigned
-                              </span>
-                            ) : (
-                              <span className="badge-status" style={{ fontSize: '0.72rem', padding: '2px 8px', background: '#fff3e0', color: '#e65100', border: '1px solid #ffe0b2', fontWeight: 'bold' }}>
-                                ⏳ Not Released
-                              </span>
-                            )}
+                            <span className="badge-status" style={{ fontSize: '0.72rem', padding: '2px 8px', background: item.sync_status === 'failed' ? '#fee2e2' : '#fef3c7', color: item.sync_status === 'failed' ? '#b91c1c' : '#b45309', border: item.sync_status === 'failed' ? '1px solid #fca5a5' : '1px solid #fde68a', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                              {item.sync_status === 'failed' ? '⚠️ Upload Failed (Pending)' : '⏳ Upload Pending'}
+                            </span>
                           </div>
+                        ) : (
+                          currentUser?.role === 'admin' && (
+                            <div style={{ alignSelf: 'flex-start', marginTop: '4px' }}>
+                              {item.status === 'released' ? (
+                                <span className="badge-status badge-released" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
+                                  ✅ Released for Review
+                                </span>
+                              ) : item.status === 'assigned' || item.status === 'completed' ? (
+                                <span className="badge-status badge-assigned" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
+                                  🔒 Assigned
+                                </span>
+                              ) : (
+                                <span className="badge-status" style={{ fontSize: '0.72rem', padding: '2px 8px', background: '#fff3e0', color: '#e65100', border: '1px solid #ffe0b2', fontWeight: 'bold' }}>
+                                  ⏳ Not Released
+                                </span>
+                              )}
+                            </div>
+                          )
                         )}
+
 
                         {/* Institutional Candidate Badge */}
                         {item.institutional_candidate && item.institutional_candidate !== 'None' && (
