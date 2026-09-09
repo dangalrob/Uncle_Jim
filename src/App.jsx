@@ -460,6 +460,12 @@ export default function App() {
       setCapturedPhotos(updatedPhotos);
       setCaptureStep('enter_details');
 
+      // Immediately open the interactive crop modal for the primary/newly added photo
+      if (newPhotos[0]?.url) {
+        setCropModalSrc(newPhotos[0].url);
+        setCropModalTarget('capture_primary');
+      }
+
       // Persist active draft to IndexedDB immediately
       await offlineStorage.saveActiveDraft({
         photos: updatedPhotos.map(p => ({
@@ -577,6 +583,8 @@ export default function App() {
     ];
     setCapturedPhotos(prev => (prev.length > 0 ? prev : samplePhotos));
     setCaptureStep('enter_details');
+    setCropModalSrc(samplePhotos[0].url);
+    setCropModalTarget('capture_primary');
   };
 
   const triggerSyncOfflineItems = async () => {
@@ -836,25 +844,30 @@ export default function App() {
 
   const handleReleaseItem = async (itemId) => {
     try {
+      // Optimistic update for instant response
+      setItems(prev => prev.map(item => item.id === itemId ? { ...item, status: 'released' } : item));
+      if (adminEditingItem && adminEditingItem.id === itemId) {
+        setEditFormStatus('released');
+        setAdminEditingItem(prev => (prev ? { ...prev, status: 'released' } : prev));
+      }
+      setSelectedItem(prev => (prev && prev.id === itemId ? { ...prev, status: 'released' } : prev));
+
       const res = await fetch(`/api/items/${itemId}/release`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
       if (res.ok) {
-        if (adminEditingItem && adminEditingItem.id === itemId) {
-          setEditFormStatus('released');
-          setAdminEditingItem(prev => (prev ? { ...prev, status: 'released' } : prev));
-        }
-        setSelectedItem(prev => (prev && prev.id === itemId ? { ...prev, status: 'released' } : prev));
         await fetchItems();
         await fetchDashboardStats();
       } else {
         const data = await res.json();
         alert(data.error || "Failed to release item.");
+        await fetchItems();
       }
     } catch (err) {
       console.error("Error releasing item:", err);
       alert("Error releasing item.");
+      await fetchItems();
     }
   };
 
@@ -865,25 +878,30 @@ export default function App() {
     if (!confirmed) return;
 
     try {
+      // Optimistic update
+      setItems(prev => prev.map(item => item.id === itemId ? { ...item, status: 'draft' } : item));
+      if (adminEditingItem && adminEditingItem.id === itemId) {
+        setEditFormStatus('draft');
+        setAdminEditingItem(prev => (prev ? { ...prev, status: 'draft' } : prev));
+      }
+      setSelectedItem(prev => (prev && prev.id === itemId ? { ...prev, status: 'draft' } : prev));
+
       const res = await fetch(`/api/items/${itemId}/unrelease`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       });
       if (res.ok) {
-        if (adminEditingItem && adminEditingItem.id === itemId) {
-          setEditFormStatus('draft');
-          setAdminEditingItem(prev => (prev ? { ...prev, status: 'draft' } : prev));
-        }
-        setSelectedItem(prev => (prev && prev.id === itemId ? { ...prev, status: 'draft' } : prev));
         await fetchItems();
         await fetchDashboardStats();
       } else {
         const data = await res.json();
         alert(data.error || "Failed to unrelease item.");
+        await fetchItems();
       }
     } catch (err) {
       console.error("Error unreleasing item:", err);
       alert("Error unreleasing item.");
+      await fetchItems();
     }
   };
 
@@ -2251,7 +2269,7 @@ export default function App() {
                         <div style={{
                           position: 'relative',
                           width: '100%',
-                          height: '210px',
+                          aspectRatio: '1 / 1',
                           borderRadius: '8px',
                           overflow: 'hidden',
                           backgroundColor: '#f6f5f0',
@@ -2299,7 +2317,7 @@ export default function App() {
                           </div>
                         ) : (
                           currentUser?.role === 'admin' && (
-                            <div style={{ alignSelf: 'flex-start', marginTop: '4px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginTop: '6px', gap: '4px' }}>
                               {item.status === 'released' ? (
                                 <span className="badge-status badge-released" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
                                   ✅ Released for Review
@@ -2309,9 +2327,22 @@ export default function App() {
                                   🔒 Assigned
                                 </span>
                               ) : (
-                                <span className="badge-status" style={{ fontSize: '0.72rem', padding: '2px 8px', background: '#fff3e0', color: '#e65100', border: '1px solid #ffe0b2', fontWeight: 'bold' }}>
-                                  ⏳ Not Released
-                                </span>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '6px' }}>
+                                  <span className="badge-status" style={{ fontSize: '0.72rem', padding: '2px 8px', background: '#fff3e0', color: '#e65100', border: '1px solid #ffe0b2', fontWeight: 'bold' }}>
+                                    ⏳ Not Released
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="btn-quick-release"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleReleaseItem(item.id);
+                                    }}
+                                    title="Release item immediately to Family Review"
+                                  >
+                                    🚀 Release
+                                  </button>
+                                </div>
                               )}
                             </div>
                           )

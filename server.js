@@ -181,6 +181,7 @@ async function initDatabase() {
     db.run(`ALTER TABLE items ADD COLUMN institutional_candidate TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN institutional_name TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN client_id TEXT`, () => {});
+    db.run(`ALTER TABLE item_photos ADD COLUMN original_photo_url TEXT`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS draft_order (
       estate_id TEXT NOT NULL,
@@ -572,17 +573,29 @@ app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'c
           .toFormat('webp', { quality: 85 })
           .toFile(thumbPath);
 
-        const photoUrl = `/uploads/full/${file.filename}`;
+        let photoUrl = `/uploads/full/${file.filename}`;
+        const originalPhotoUrl = `/uploads/full/${file.filename}`;
+
+        // If a cropped version was provided, save the high-res cropped version to full uploads
+        if (croppedFile) {
+          const croppedFilename = 'crop-' + file.filename.replace(/\.[^/.]+$/, "") + '.webp';
+          const croppedFullPath = path.join(FULL_UPLOADS_DIR, croppedFilename);
+          await sharp(croppedFile.path)
+            .toFormat('webp', { quality: 90 })
+            .toFile(croppedFullPath);
+          photoUrl = `/uploads/full/${croppedFilename}`;
+        }
+
         const thumbnailUrl = `/uploads/thumbs/${thumbFilename}`;
         const photoId = 'photo_' + Date.now() + '_' + i;
         const isPrimary = (existingPhotos.length === 0 && i === 0) ? 1 : 0;
 
         await dbRun(
-          `INSERT INTO item_photos (id, item_id, photo_url, thumbnail_url, is_primary, display_order) VALUES (?, ?, ?, ?, ?, ?)`,
-          [photoId, itemId, photoUrl, thumbnailUrl, isPrimary, existingPhotos.length + i]
+          `INSERT INTO item_photos (id, item_id, photo_url, thumbnail_url, original_photo_url, is_primary, display_order) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [photoId, itemId, photoUrl, thumbnailUrl, originalPhotoUrl, isPrimary, existingPhotos.length + i]
         );
 
-        savedPhotos.push({ id: photoId, photo_url: photoUrl, thumbnail_url: thumbnailUrl, photoUrl, thumbnailUrl, isPrimary });
+        savedPhotos.push({ id: photoId, photo_url: photoUrl, thumbnail_url: thumbnailUrl, photoUrl, thumbnailUrl, original_photo_url: originalPhotoUrl, isPrimary });
       }
     }
 
@@ -926,7 +939,7 @@ app.post('/api/items/:id/photos/:photoId/set-primary', authenticateToken, requir
   }
 });
 
-// Endpoint: Update crop for a photo (non-destructive: overwrites thumbnail_url with cropped display version, leaves photo_url intact)
+// Endpoint: Update crop for a photo (saves high-res cropped version as photo_url and updates thumbnail_url, preserving original_photo_url)
 app.put('/api/items/:id/photos/:photoId/crop', authenticateToken, requireRole(['admin', 'contributor']), upload.single('croppedImage'), async (req, res) => {
   try {
     const { id: itemId, photoId } = req.params;
@@ -940,9 +953,18 @@ app.put('/api/items/:id/photos/:photoId/crop', authenticateToken, requireRole(['
       return res.status(400).json({ error: "No cropped image uploaded" });
     }
 
-    const thumbFilename = 'thumb-' + Date.now() + '-' + Math.round(Math.random() * 1E9) + '.webp';
+    const fileBase = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const croppedFilename = 'crop-' + fileBase + '.webp';
+    const croppedFullPath = path.join(FULL_UPLOADS_DIR, croppedFilename);
+    const thumbFilename = 'thumb-' + fileBase + '.webp';
     const thumbPath = path.join(THUMB_UPLOADS_DIR, thumbFilename);
 
+    // Save high quality cropped version to full uploads
+    await sharp(req.file.path)
+      .toFormat('webp', { quality: 90 })
+      .toFile(croppedFullPath);
+
+    // Save thumbnail version from cropped file
     await sharp(req.file.path)
       .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
       .toFormat('webp', { quality: 85 })
@@ -953,20 +975,26 @@ app.put('/api/items/:id/photos/:photoId/crop', authenticateToken, requireRole(['
       try { fs.unlinkSync(req.file.path); } catch (e) {}
     }
 
+    const newPhotoUrl = `/uploads/full/${croppedFilename}`;
     const newThumbUrl = `/uploads/thumbs/${thumbFilename}`;
-    await dbRun(`UPDATE item_photos SET thumbnail_url = ? WHERE id = ?`, [newThumbUrl, photoId]);
+    const origUrl = photo.original_photo_url || photo.photo_url;
+
+    await dbRun(
+      `UPDATE item_photos SET photo_url = ?, thumbnail_url = ?, original_photo_url = COALESCE(original_photo_url, ?) WHERE id = ?`,
+      [newPhotoUrl, newThumbUrl, origUrl, photoId]
+    );
 
     const allPhotos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId]);
     logAudit(req.user.estate_id, req.user.id, 'CROP_ITEM_PHOTO', 'item_photos', photoId, { itemId });
 
-    res.json({ success: true, photo: { ...photo, thumbnail_url: newThumbUrl }, photos: allPhotos });
+    res.json({ success: true, photo: { ...photo, photo_url: newPhotoUrl, thumbnail_url: newThumbUrl }, photos: allPhotos });
   } catch (err) {
     console.error("Failed to crop photo:", err);
     res.status(500).json({ error: "Failed to update cropped photo" });
   }
 });
 
-// Endpoint: Restore photo framing to original (regenerates thumbnail_url from original full-res photo_url)
+// Endpoint: Restore photo framing to original (regenerates thumbnail_url and restores photo_url from original)
 app.post('/api/items/:id/photos/:photoId/restore-crop', authenticateToken, requireRole(['admin', 'contributor']), async (req, res) => {
   try {
     const { id: itemId, photoId } = req.params;
@@ -976,8 +1004,8 @@ app.post('/api/items/:id/photos/:photoId/restore-crop', authenticateToken, requi
     const photo = await dbGet(`SELECT * FROM item_photos WHERE id = ? AND item_id = ?`, [photoId, itemId]);
     if (!photo) return res.status(404).json({ error: "Photo not found" });
 
-    // The original photo is at photo.photo_url (e.g. /uploads/full/photo-123.jpg)
-    const originalRelPath = photo.photo_url.replace(/^\/uploads\//, '');
+    const originalUrl = photo.original_photo_url || photo.photo_url;
+    const originalRelPath = originalUrl.replace(/^\/uploads\//, '');
     const originalFullPath = path.join(UPLOADS_DIR, originalRelPath);
 
     if (!fs.existsSync(originalFullPath)) {
@@ -993,12 +1021,12 @@ app.post('/api/items/:id/photos/:photoId/restore-crop', authenticateToken, requi
       .toFile(thumbPath);
 
     const newThumbUrl = `/uploads/thumbs/${thumbFilename}`;
-    await dbRun(`UPDATE item_photos SET thumbnail_url = ? WHERE id = ?`, [newThumbUrl, photoId]);
+    await dbRun(`UPDATE item_photos SET photo_url = ?, thumbnail_url = ? WHERE id = ?`, [originalUrl, newThumbUrl, photoId]);
 
     const allPhotos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId]);
     logAudit(req.user.estate_id, req.user.id, 'RESTORE_ORIGINAL_PHOTO', 'item_photos', photoId, { itemId });
 
-    res.json({ success: true, photo: { ...photo, thumbnail_url: newThumbUrl }, photos: allPhotos });
+    res.json({ success: true, photo: { ...photo, photo_url: originalUrl, thumbnail_url: newThumbUrl }, photos: allPhotos });
   } catch (err) {
     console.error("Failed to restore original photo:", err);
     res.status(500).json({ error: "Failed to restore original photo" });

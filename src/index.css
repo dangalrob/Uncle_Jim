@@ -1500,3 +1500,32 @@ body {
   }
 }
 
+/* Quick Release Action Button for Inventory Cards */
+.btn-quick-release {
+  background-color: var(--pine-primary);
+  color: #ffffff;
+  border: 1px solid var(--pine-primary);
+  border-radius: 6px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  box-shadow: 0 1px 3px rgba(35, 78, 56, 0.2);
+  white-space: nowrap;
+}
+
+.btn-quick-release:hover {
+  background-color: var(--pine-hover);
+  border-color: var(--pine-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 5px rgba(35, 78, 56, 0.3);
+}
+
+.btn-quick-release:active {
+  transform: translateY(0);
+}
+
