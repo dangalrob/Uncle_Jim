@@ -5,7 +5,8 @@ import {
   Search, Filter, Heart, ArrowLeft, ArrowRight, CheckCircle2, Camera, 
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
   Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff,
-  Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign, Crop
+  Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign, Crop,
+  LogOut
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import AdminWorkbench from './components/AdminWorkbench';
@@ -97,6 +98,8 @@ export default function App() {
   const [userDecision, setUserDecision] = useState('interested');
   const [userComment, setUserComment] = useState('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef(null);
   const cameraInputRef = useRef(null);
   const libraryInputRef = useRef(null);
 
@@ -238,6 +241,23 @@ export default function App() {
   useEffect(() => {
     checkAuth();
   }, []);
+
+  // Close user dropdown menu when tapping/clicking outside
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setUserMenuOpen(false);
+      }
+    };
+    if (userMenuOpen) {
+      document.addEventListener('mousedown', handleOutsideClick);
+      document.addEventListener('touchstart', handleOutsideClick);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('touchstart', handleOutsideClick);
+    };
+  }, [userMenuOpen]);
 
   useEffect(() => {
     if (currentUser) {
@@ -1463,12 +1483,53 @@ export default function App() {
                   <span>{offlineMode ? 'Offline Mode: ON' : 'Offline Mode: OFF'}</span>
                 </button>
 
-                <div className="header-user-menu">
-                  <div className="user-avatar">{(currentUser?.name || 'User').split(' ').map(n=>n[0]).join('')}</div>
-                  <div className="user-info-text">
-                    <div style={{ fontWeight: 'bold' }}>{currentUser?.name}</div>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{currentUser?.role}</div>
-                  </div>
+                <div className="header-user-container" ref={userMenuRef}>
+                  <button
+                    type="button"
+                    className="header-user-btn"
+                    onClick={() => setUserMenuOpen(!userMenuOpen)}
+                    aria-label="User account menu"
+                    aria-expanded={userMenuOpen}
+                    title="Account & Sign Out"
+                  >
+                    <div className="user-avatar">
+                      {(currentUser?.name || 'User').split(' ').filter(Boolean).map(n => n[0]).join('').slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="user-info-text">
+                      <div style={{ fontWeight: 'bold' }}>{currentUser?.name}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        {currentUser?.role === 'contributor' ? 'Photographer' : currentUser?.role}
+                      </div>
+                    </div>
+                  </button>
+
+                  {userMenuOpen && (
+                    <div className="user-dropdown-menu">
+                      <div className="user-dropdown-header">
+                        <div className="user-dropdown-name">{currentUser?.name}</div>
+                        <div className="user-dropdown-email">{currentUser?.email}</div>
+                        <div style={{ marginTop: '6px' }}>
+                          <span className="user-dropdown-role-badge">
+                            {currentUser?.role === 'admin' ? '👑 Admin' :
+                             currentUser?.role === 'contributor' ? '📷 Photographer' :
+                             currentUser?.role === 'institution' ? '🏛️ Institution' :
+                             '👤 Family Reviewer'}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="user-dropdown-logout-btn"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          handleLogout();
+                        }}
+                      >
+                        <LogOut size={16} />
+                        <span>Log Out</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             </header>
@@ -1565,43 +1626,43 @@ export default function App() {
 
                 {/* Quick Test Logins */}
                 <div className="login-test-accounts-box" style={{ background: 'var(--bg-subtle)', padding: '0.75rem 0.85rem', borderRadius: '8px', marginBottom: '1.25rem', border: '1px solid var(--border-color)' }}>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--pine-primary)', marginBottom: '0.45rem', letterSpacing: '0.5px' }}>⚡ QUICK TEST LOGIN ACCOUNTS:</div>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--pine-primary)', marginBottom: '0.45rem', letterSpacing: '0.5px' }}>⚡ QUICK TEST LOGIN ACCOUNTS (PASSWORD: password123):</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
                     <button
                       type="button"
                       className="btn-outline"
                       style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
-                      onClick={() => { setLoginEmail('dan@example.com'); setLoginPassword('password123'); handleLogin('dan@example.com', 'password123'); }}
+                      onClick={() => { setLoginEmail('dan@unclejim.estate'); setLoginPassword('password123'); handleLogin('dan@unclejim.estate', 'password123'); }}
                     >
-                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>🔑 Dan (Admin)</span>
-                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>dan@example.com</span>
+                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>👑 Dan (Admin)</span>
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>dan@unclejim.estate</span>
                     </button>
                     <button
                       type="button"
                       className="btn-outline"
                       style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
-                      onClick={() => { setLoginEmail('mary@example.com'); setLoginPassword('password123'); handleLogin('mary@example.com', 'password123'); }}
+                      onClick={() => { setLoginEmail('sarah@unclejim.estate'); setLoginPassword('password123'); handleLogin('sarah@unclejim.estate', 'password123'); }}
                     >
-                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>👤 Mary (Cousin)</span>
-                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>mary@example.com</span>
+                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>📷 Sarah (Photographer)</span>
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>sarah@unclejim.estate</span>
                     </button>
                     <button
                       type="button"
                       className="btn-outline"
                       style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
-                      onClick={() => { setLoginEmail('john@example.com'); setLoginPassword('password123'); handleLogin('john@example.com', 'password123'); }}
+                      onClick={() => { setLoginEmail('jean@unclejim.estate'); setLoginPassword('password123'); handleLogin('jean@unclejim.estate', 'password123'); }}
                     >
-                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>👤 John (Cousin)</span>
-                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>john@example.com</span>
+                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>👤 Jean (Reviewer)</span>
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>jean@unclejim.estate</span>
                     </button>
                     <button
                       type="button"
                       className="btn-outline"
                       style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
-                      onClick={() => { setLoginEmail('museum@example.com'); setLoginPassword('password123'); handleLogin('museum@example.com', 'password123'); }}
+                      onClick={() => { setLoginEmail('museum@unclejim.estate'); setLoginPassword('password123'); handleLogin('museum@unclejim.estate', 'password123'); }}
                     >
-                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>🏛️ Maritime Museum</span>
-                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>museum@example.com</span>
+                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>🏛️ Museum (Institution)</span>
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>museum@unclejim.estate</span>
                     </button>
                   </div>
                 </div>
@@ -1612,10 +1673,10 @@ export default function App() {
                       Email Address
                     </label>
                     <input
-                      type="email"
+                      type="text"
                       value={loginEmail}
                       onChange={(e) => setLoginEmail(e.target.value)}
-                      placeholder="e.g. dan@example.com"
+                      placeholder="e.g. dan@unclejim.estate"
                       style={{ width: '100%', minHeight: '48px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '16px', boxSizing: 'border-box' }}
                       required
                     />

@@ -234,19 +234,19 @@ async function initDatabase() {
     }
 
     // Seed Users
-    const userCount = await dbGet(`SELECT COUNT(*) as count FROM users`);
-    if (userCount.count === 0) {
-      const defaultPasswordHash = await bcrypt.hash('password123', 10);
-      const seedUsers = [
-        ['user_dan', 'estate_uncle_jim', 'Dan Robinson', 'dan@unclejim.estate', defaultPasswordHash, 'admin', '555-0100', 'Verona, NJ'],
-        ['user_frank', 'estate_uncle_jim', 'Frank Robinson (Executor)', 'frank@unclejim.estate', defaultPasswordHash, 'admin', '555-0101', 'Ithaca, NY'],
-        ['user_sarah', 'estate_uncle_jim', 'Cousin Sarah', 'sarah@unclejim.estate', defaultPasswordHash, 'contributor', '555-0102', 'Madison, WI'],
-        ['user_jean', 'estate_uncle_jim', 'Aunt Jean', 'jean@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0103', 'Manitowish Waters, WI'],
-        ['user_tim', 'estate_uncle_jim', 'Tim Robinson', 'tim@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0104', 'Chicago, IL'],
-        ['user_susan', 'estate_uncle_jim', 'Susan Robinson', 'susan@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0105', 'Boston, MA'],
-        ['user_museum', 'estate_uncle_jim', 'City Historical Museum', 'museum@unclejim.estate', defaultPasswordHash, 'institution', '555-0109', 'Manitowish Waters, WI']
-      ];
-      for (const [id, eId, name, email, pass, role, phone, addr] of seedUsers) {
+    const defaultPasswordHash = await bcrypt.hash('password123', 10);
+    const seedUsers = [
+      ['user_dan', 'estate_uncle_jim', 'Dan Robinson', 'dan@unclejim.estate', defaultPasswordHash, 'admin', '555-0100', 'Verona, NJ'],
+      ['user_frank', 'estate_uncle_jim', 'Frank Robinson (Executor)', 'frank@unclejim.estate', defaultPasswordHash, 'admin', '555-0101', 'Ithaca, NY'],
+      ['user_sarah', 'estate_uncle_jim', 'Cousin Sarah', 'sarah@unclejim.estate', defaultPasswordHash, 'contributor', '555-0102', 'Madison, WI'],
+      ['user_jean', 'estate_uncle_jim', 'Aunt Jean', 'jean@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0103', 'Manitowish Waters, WI'],
+      ['user_tim', 'estate_uncle_jim', 'Tim Robinson', 'tim@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0104', 'Chicago, IL'],
+      ['user_susan', 'estate_uncle_jim', 'Susan Robinson', 'susan@unclejim.estate', defaultPasswordHash, 'reviewer', '555-0105', 'Boston, MA'],
+      ['user_museum', 'estate_uncle_jim', 'City Historical Museum', 'museum@unclejim.estate', defaultPasswordHash, 'institution', '555-0109', 'Manitowish Waters, WI']
+    ];
+    for (const [id, eId, name, email, pass, role, phone, addr] of seedUsers) {
+      const existing = await dbGet(`SELECT id FROM users WHERE id = ? OR email = ?`, [id, email]);
+      if (!existing) {
         await dbRun(`INSERT INTO users (id, estate_id, name, email, password_hash, role, phone, address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
           id, eId, name, email, pass, role, phone, addr
         ]);
@@ -254,7 +254,6 @@ async function initDatabase() {
     }
 
     // Ensure all 9 draft participants exist
-    const defaultPasswordHash = await bcrypt.hash('password123', 10);
     const draftParticipants = [
       { id: 'user_vinny', name: 'Vinny', email: 'vinny@unclejim.estate', role: 'reviewer' },
       { id: 'user_brian', name: 'Brian', email: 'brian@unclejim.estate', role: 'reviewer' },
@@ -466,7 +465,24 @@ app.post('/api/auth/login', async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: "Email and password required" });
 
   try {
-    const user = await dbGet(`SELECT * FROM users WHERE email = ?`, [email.toLowerCase().trim()]);
+    const cleanEmail = email.toLowerCase().trim();
+    let user = await dbGet(`SELECT * FROM users WHERE email = ?`, [cleanEmail]);
+    
+    // Support @example.com alias to @unclejim.estate
+    if (!user && cleanEmail.endsWith('@example.com')) {
+      const aliasEmail = cleanEmail.replace('@example.com', '@unclejim.estate');
+      user = await dbGet(`SELECT * FROM users WHERE email = ?`, [aliasEmail]);
+    }
+
+    // Support plain username or id without domain (e.g. 'dan', 'user_dan', 'sarah')
+    if (!user && !cleanEmail.includes('@')) {
+      user = await dbGet(`SELECT * FROM users WHERE email = ? OR id = ? OR LOWER(name) = ?`, [
+        `${cleanEmail}@unclejim.estate`,
+        cleanEmail.startsWith('user_') ? cleanEmail : `user_${cleanEmail}`,
+        cleanEmail
+      ]);
+    }
+
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
     const isValid = await bcrypt.compare(password, user.password_hash);
