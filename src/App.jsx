@@ -836,7 +836,10 @@ export default function App() {
 
                 let fileName = p.name || `photo_${i}.jpg`;
                 if (!fileName.includes('.')) fileName += '.jpg';
-                formData.append('photos', blobData, fileName);
+                const fileObj = (typeof File !== 'undefined' && blobData instanceof Blob && !(blobData instanceof File))
+                  ? new File([blobData], fileName, { type: mime })
+                  : blobData;
+                formData.append('photos', fileObj, fileName);
                 attachedPhotoCount++;
               }
             }
@@ -857,7 +860,10 @@ export default function App() {
               totalBytes += cropData.size;
               diag.photoSizes.push(`crop: ${sizeKb} KB`);
               diag.photoMimeTypes.push(cropData.type || 'image/webp');
-              formData.append('croppedPhotos', cropData, 'cropped.webp');
+              const cropFile = (typeof File !== 'undefined' && cropData instanceof Blob && !(cropData instanceof File))
+                ? new File([cropData], 'cropped.webp', { type: cropData.type || 'image/webp' })
+                : cropData;
+              formData.append('croppedPhotos', cropFile, 'cropped.webp');
               attachedPhotoCount++;
             }
           }

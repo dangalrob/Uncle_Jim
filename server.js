@@ -378,15 +378,95 @@ async function initDatabase() {
 
 initDatabase().catch(console.error);
 
+let lastServerError = null;
+let lastMulterErrorDetails = null;
+
 // Multer Storage Configuration
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, FULL_UPLOADS_DIR),
+  destination: (req, file, cb) => {
+    try {
+      if (!fs.existsSync(FULL_UPLOADS_DIR)) {
+        fs.mkdirSync(FULL_UPLOADS_DIR, { recursive: true });
+      }
+      cb(null, FULL_UPLOADS_DIR);
+    } catch (err) {
+      lastMulterErrorDetails = {
+        phase: 'destination',
+        error: err.message,
+        stack: err.stack,
+        code: err.code
+      };
+      console.error("[Multer Storage Destination Error]:", err);
+      cb(err);
+    }
+  },
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'photo-' + uniqueSuffix + path.extname(file.originalname));
+    try {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const origName = (file && typeof file.originalname === 'string') ? file.originalname : 'photo.jpg';
+      const ext = path.extname(origName) || '.jpg';
+      cb(null, 'photo-' + uniqueSuffix + ext);
+    } catch (err) {
+      lastMulterErrorDetails = {
+        phase: 'filename',
+        error: err.message,
+        stack: err.stack,
+        code: err.code,
+        fileMetadata: {
+          fieldname: file?.fieldname,
+          mimetype: file?.mimetype,
+          encoding: file?.encoding
+        }
+      };
+      console.error("[Multer Storage Filename Error]:", err);
+      cb(err);
+    }
   }
 });
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50 MB per photo
+    fieldSize: 20 * 1024 * 1024 // 20 MB for text fields
+  }
+});
+
+// Controlled Multer middleware wrapper for Rapid Capture
+const handleRapidUpload = (req, res, next) => {
+  upload.any()(req, res, (err) => {
+    if (err) {
+      const errorPayload = {
+        name: err.name,
+        code: err.code || lastMulterErrorDetails?.code || 'MULTER_ERROR',
+        message: err.message,
+        stage: 'multipart-receive',
+        phase: lastMulterErrorDetails?.phase || (err.code ? 'limit_enforcement' : 'stream_write'),
+        path: req.path,
+        method: req.method,
+        field: err.field || null,
+        contentType: req.headers['content-type'] ? req.headers['content-type'].split(';')[0] : null,
+        contentLength: req.headers['content-length'] || null,
+        stack: err.stack
+      };
+
+      console.error("[RapidCapture Multer Error]:", errorPayload);
+      lastServerError = {
+        timestamp: new Date().toISOString(),
+        ...errorPayload
+      };
+
+      return res.status(400).json({
+        error: `Upload failed in ${errorPayload.phase}: ${err.message}`,
+        stage: 'multipart-receive',
+        code: errorPayload.code,
+        message: err.message,
+        phase: errorPayload.phase,
+        field: errorPayload.field
+      });
+    }
+    next();
+  });
+};
 
 const app = express();
 app.use(cors());
@@ -529,7 +609,7 @@ app.post('/api/auth/logout', (req, res) => {
 // ----------------------------------------------------
 // RAPID MOBILE PHOTO CAPTURE & ITEM CREATION
 // ----------------------------------------------------
-app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'contributor']), upload.any(), async (req, res) => {
+app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'contributor']), handleRapidUpload, async (req, res) => {
   try {
     const { title, locationInHouse, categoryId, description, notes, value, institutionalCandidate, institutionalName, clientId } = req.body;
     const clientIdParam = (clientId || req.body.client_id || '').trim();
@@ -647,8 +727,23 @@ app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'c
       }
     });
   } catch (err) {
-    console.error("Rapid capture error:", err);
-    res.status(500).json({ error: "Failed to process rapid capture upload" });
+    console.error("Rapid capture error in route handler:", err);
+    lastServerError = {
+      timestamp: new Date().toISOString(),
+      path: req.path,
+      method: req.method,
+      stage: 'route-processing',
+      name: err.name,
+      code: err.code || 'ROUTE_ERROR',
+      message: err.message,
+      stack: err.stack
+    };
+    res.status(500).json({
+      error: `Failed to process rapid capture upload: ${err.message}`,
+      stage: 'route-processing',
+      code: err.code || 'ROUTE_ERROR',
+      message: err.message
+    });
   }
 });
 
@@ -1850,12 +1945,56 @@ app.get('/api/admin/audit-logs', authenticateToken, requireRole(['admin']), asyn
   }
 });
 
+// Diagnostics endpoint to inspect the last server error
+app.get('/api/admin/last-error', (req, res) => {
+  res.json({
+    lastServerError: lastServerError || "No errors recorded",
+    lastMulterErrorDetails: lastMulterErrorDetails || null
+  });
+});
+
 // Fallback to index.html for SPA routes (strictly no-cache for index.html)
 app.get('*', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+// Global Express Error Handler (catches any error passed to next(err) from any middleware or route)
+app.use((err, req, res, next) => {
+  console.error("[Express Global Error Handler]:", {
+    path: req.path,
+    method: req.method,
+    name: err.name,
+    code: err.code,
+    message: err.message,
+    stack: err.stack
+  });
+
+  lastServerError = {
+    timestamp: new Date().toISOString(),
+    path: req.path,
+    method: req.method,
+    stage: 'unhandled-middleware',
+    name: err.name,
+    code: err.code || 'SERVER_ERROR',
+    message: err.message,
+    stack: err.stack,
+    contentType: req.headers['content-type'] ? req.headers['content-type'].split(';')[0] : null,
+    contentLength: req.headers['content-length'] || null
+  };
+
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  res.status(err.status || err.statusCode || 500).json({
+    error: `Server error in ${req.path}: ${err.message || 'Internal error'}`,
+    stage: 'unhandled-middleware',
+    code: err.code || 'SERVER_ERROR',
+    message: err.message
+  });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
