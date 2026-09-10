@@ -6,7 +6,7 @@ import {
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
   Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff,
   Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign, Crop,
-  LogOut
+  LogOut, Activity
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import AdminWorkbench from './components/AdminWorkbench';
