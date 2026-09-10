@@ -130,6 +130,11 @@ export default function App() {
     message: null
   });
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncDiagnostics, setSyncDiagnostics] = useState([]);
+  const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
+  const [needsReauth, setNeedsReauth] = useState(false);
+  const [reauthPassword, setReauthPassword] = useState('');
+  const [isReauthenticating, setIsReauthenticating] = useState(false);
   const [myInterests, setMyInterests] = useState([]);
   
   const [items, setItems] = useState([]);
@@ -299,16 +304,26 @@ export default function App() {
   }, [currentView]);
 
 
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('uj_token');
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+  };
+
   const checkAuth = async () => {
     try {
-      const res = await fetch('/api/auth/me');
+      const res = await fetch('/api/auth/me', {
+        headers: getAuthHeaders(),
+        credentials: 'include'
+      });
       if (res.ok) {
         const data = await res.json();
         setCurrentUser(data.user);
         localStorage.setItem('uj_user', JSON.stringify(data.user));
+        setNeedsReauth(false);
         setCurrentView(prev => (prev === 'login' ? (data.user.role === 'admin' ? 'dashboard' : 'review') : prev));
       } else {
         localStorage.removeItem('uj_user');
+        localStorage.removeItem('uj_token');
         setCurrentView('login');
       }
     } catch (err) {
@@ -330,12 +345,17 @@ export default function App() {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ email: emailToUse, password: passToUse })
       });
       const data = await res.json();
       if (res.ok) {
         setCurrentUser(data.user);
         localStorage.setItem('uj_user', JSON.stringify(data.user));
+        if (data.token) {
+          localStorage.setItem('uj_token', data.token);
+        }
+        setNeedsReauth(false);
         if (data.user.role === 'admin') setCurrentView('dashboard');
         else setCurrentView('review');
       } else {
@@ -346,9 +366,42 @@ export default function App() {
     }
   };
 
+  const handleInPlaceReauth = async (e) => {
+    if (e) e.preventDefault();
+    setIsReauthenticating(true);
+    try {
+      const email = currentUser?.email || 'dan@unclejim.estate';
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password: reauthPassword })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setCurrentUser(data.user);
+        localStorage.setItem('uj_user', JSON.stringify(data.user));
+        if (data.token) {
+          localStorage.setItem('uj_token', data.token);
+        }
+        setNeedsReauth(false);
+        setReauthPassword('');
+        // Immediately resume synchronization now that session is refreshed!
+        setTimeout(() => triggerSyncOfflineItems(), 350);
+      } else {
+        alert(data.error || "Password incorrect. Please try again.");
+      }
+    } catch (err) {
+      alert("Network error during sign-in. Check your connection.");
+    } finally {
+      setIsReauthenticating(false);
+    }
+  };
+
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
     localStorage.removeItem('uj_user');
+    localStorage.removeItem('uj_token');
     setCurrentUser(null);
     setCurrentView('login');
   };
@@ -587,7 +640,7 @@ export default function App() {
     setCropModalTarget('capture_primary');
   };
 
-  const triggerSyncOfflineItems = async () => {
+  const triggerSyncOfflineItems = async (onlyFailed = false) => {
     if (!navigator.onLine) {
       setSyncProgress({
         isSyncing: false,
@@ -598,12 +651,45 @@ export default function App() {
         failed: 0,
         message: "Waiting for network connection to upload offline items..."
       });
-      window.addEventListener('online', () => triggerSyncOfflineItems(), { once: true });
+      window.addEventListener('online', () => triggerSyncOfflineItems(onlyFailed), { once: true });
       return;
     }
 
-    const staged = await offlineStorage.getStagedItems();
-    if (staged.length === 0) {
+    // Step 1: Pre-verify authentication with the backend before attempting uploads
+    try {
+      const authRes = await fetch('/api/auth/me', {
+        headers: getAuthHeaders(),
+        credentials: 'include'
+      });
+      if (!authRes.ok) {
+        setSyncProgress({
+          isSyncing: false,
+          waitingForConnection: false,
+          total: 0,
+          completed: 0,
+          remaining: 0,
+          failed: 0,
+          message: "⚠️ Session expired. Please sign in to securely upload your offline items."
+        });
+        setNeedsReauth(true);
+        return;
+      }
+    } catch (netErr) {
+      setSyncProgress({
+        isSyncing: false,
+        waitingForConnection: true,
+        total: 0,
+        completed: 0,
+        remaining: 0,
+        failed: 0,
+        message: "⚠️ Cannot connect to server. Retrying when connection is available..."
+      });
+      return;
+    }
+
+    // Step 2: Retrieve staged items from IndexedDB
+    let staged = await offlineStorage.getStagedItems();
+    if (!staged || staged.length === 0) {
       setSyncProgress({
         isSyncing: false,
         waitingForConnection: false,
@@ -616,9 +702,20 @@ export default function App() {
       return;
     }
 
-    const total = staged.length;
+    if (onlyFailed) {
+      staged = staged.filter(item => item.syncStatus === 'failed');
+      if (staged.length === 0) {
+        alert("No failed items to retry.");
+        return;
+      }
+    }
+
+    // Sort to ensure stable processing order (oldest first)
+    const itemsToUpload = [...staged].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+    const total = itemsToUpload.length;
     let completed = 0;
     let failed = 0;
+    const diagnosticsList = [];
 
     setSyncProgress({
       isSyncing: true,
@@ -627,11 +724,56 @@ export default function App() {
       completed: 0,
       remaining: total,
       failed: 0,
-      message: `Uploading offline items: 0 of ${total} complete — ${total} remaining`
+      message: `Uploading offline items: 0 of ${total} uploaded — ${total} remaining`
     });
 
-    for (let item of staged) {
+    // Step 3: Sequential 1-by-1 processing queue
+    for (let idx = 0; idx < itemsToUpload.length; idx++) {
+      const item = itemsToUpload[idx];
+
+      // If network drops mid-sync, pause gracefully without marking remaining items as failed!
+      if (!navigator.onLine) {
+        const remaining = total - completed - failed;
+        setSyncProgress({
+          isSyncing: false,
+          waitingForConnection: true,
+          total,
+          completed,
+          remaining,
+          failed,
+          message: `📶 Wi-Fi connection lost (${completed} uploaded, ${remaining} remaining). Upload will resume when reconnected...`
+        });
+        window.addEventListener('online', () => triggerSyncOfflineItems(), { once: true });
+        break;
+      }
+
+      setSyncProgress(prev => ({
+        ...prev,
+        isSyncing: true,
+        total,
+        completed,
+        remaining: total - completed - failed,
+        failed,
+        message: `Uploading item ${idx + 1} of ${total}: "${item.title || 'Untitled Item'}"... (${completed} uploaded, ${total - completed - failed} remaining)`
+      }));
+
+      // Diagnostic item tracker
+      const diag = {
+        itemId: item.id,
+        title: item.title || '(Untitled)',
+        photosCount: (item.photos || []).length,
+        hasCroppedBlob: Boolean(item.croppedBlob),
+        photoSizes: [],
+        photoMimeTypes: [],
+        endpoint: '/api/items/rapid-capture',
+        httpStatus: null,
+        serverError: null,
+        stage: 'init',
+        timestamp: new Date().toLocaleTimeString()
+      };
+
       try {
+        diag.stage = 'packaging';
         const formData = new FormData();
         formData.append('clientId', item.id);
         formData.append('title', item.title || '');
@@ -643,69 +785,130 @@ export default function App() {
         formData.append('institutionalCandidate', item.institutionalCandidate || 'None');
         formData.append('institutionalName', item.institutionalName || '');
 
+        let attachedPhotoCount = 0;
+
+        // Safely attach photos without fragile new File() constructor
         if (item.photos && item.photos.length > 0) {
-          for (let p of item.photos) {
-            if (p.data) {
-              const fileObj = p.data instanceof File ? p.data : new File([p.data], p.name || 'photo.jpg', { type: p.type || 'image/jpeg' });
-              formData.append('photos', fileObj);
+          for (let i = 0; i < item.photos.length; i++) {
+            const p = item.photos[i];
+            let blobData = p.data || p.file || p.blob;
+            if (blobData) {
+              if (blobData instanceof ArrayBuffer || ArrayBuffer.isView(blobData)) {
+                blobData = new Blob([blobData], { type: p.type || 'image/jpeg' });
+              }
+
+              if (blobData instanceof Blob) {
+                const mime = blobData.type || p.type || 'image/jpeg';
+                const sizeKb = Math.round(blobData.size / 1024);
+                diag.photoSizes.push(`${sizeKb} KB`);
+                diag.photoMimeTypes.push(mime);
+
+                let fileName = p.name || `photo_${i}.jpg`;
+                if (!fileName.includes('.')) fileName += '.jpg';
+                formData.append('photos', blobData, fileName);
+                attachedPhotoCount++;
+              }
             }
           }
         }
 
+        // Safely attach croppedPhotoBlob
         if (item.croppedBlob) {
-          formData.append('croppedPhotos', item.croppedBlob, 'cropped.webp');
+          let cropData = item.croppedBlob;
+          if (cropData instanceof ArrayBuffer || ArrayBuffer.isView(cropData)) {
+            cropData = new Blob([cropData], { type: 'image/webp' });
+          }
+          if (cropData instanceof Blob) {
+            const sizeKb = Math.round(cropData.size / 1024);
+            diag.photoSizes.push(`crop: ${sizeKb} KB`);
+            diag.photoMimeTypes.push(cropData.type || 'image/webp');
+            formData.append('croppedPhotos', cropData, 'cropped.webp');
+            attachedPhotoCount++;
+          }
         }
+
+        diag.attachedPhotoCount = attachedPhotoCount;
+        diag.stage = 'transmitting';
+
+        // 45s AbortController timeout for mobile hotspot connections
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 45000);
 
         const res = await fetch('/api/items/rapid-capture', {
           method: 'POST',
-          body: formData
+          headers: getAuthHeaders(),
+          credentials: 'include',
+          body: formData,
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
 
-        if (res.ok) {
-          const result = await res.json();
-          if (result.success) {
-            // Remove from local IndexedDB only AFTER confirmed server success!
-            await offlineStorage.deleteStagedItem(item.id);
-            completed++;
-            const remaining = total - completed - failed;
-            setSyncProgress(prev => ({
-              ...prev,
-              completed,
-              remaining,
-              message: `Uploading offline items: ${completed} of ${total} complete — ${remaining} remaining`
-            }));
+        diag.httpStatus = res.status;
+        diag.stage = 'response_evaluation';
 
-            // Update item in local items state immediately so Upload Pending is removed without duplication
-            setItems(prevItems => prevItems.map(it => it.id === item.id ? {
-              ...result.item,
-              category_name: categories.find(c => c.id === result.item.category_id)?.name || it.category_name,
-              is_offline: false,
-              sync_status: 'synced'
-            } : it));
-          } else {
-            throw new Error(result.error || "Server rejected item");
-          }
+        const responseText = await res.text();
+        let result = {};
+        try {
+          result = JSON.parse(responseText);
+        } catch (e) {
+          result = { error: responseText.slice(0, 150) };
+        }
+
+        if (res.ok && result.success) {
+          diag.stage = 'success';
+          // ONLY delete from IndexedDB AFTER confirmed 200 OK + success from server!
+          await offlineStorage.deleteStagedItem(item.id);
+          completed++;
+
+          setItems(prevItems => prevItems.map(it => it.id === item.id ? {
+            ...result.item,
+            category_name: categories.find(c => c.id === result.item.category_id)?.name || it.category_name,
+            is_offline: false,
+            sync_status: 'synced'
+          } : it));
+
+          setSyncProgress(prev => ({
+            ...prev,
+            completed,
+            remaining: total - completed - failed,
+            message: `Uploading offline items: ${completed} of ${total} uploaded — ${total - completed - failed} remaining`
+          }));
         } else {
-          throw new Error(`Server returned HTTP ${res.status}`);
+          const errMessage = result.error || `Server HTTP ${res.status}: ${responseText.slice(0, 100)}`;
+          diag.serverError = errMessage;
+          throw new Error(errMessage);
         }
       } catch (itemErr) {
-        console.error("Failed to sync item:", item.id, itemErr);
+        const isAbort = itemErr.name === 'AbortError';
+        const errMsg = isAbort ? 'Upload timed out (45s)' : (itemErr.message || 'Network upload failed');
+        diag.serverError = errMsg;
+        diagnosticsList.push(diag);
+
+        console.error("Offline sync error for item:", item.id, item.title, diag);
         failed++;
-        const remaining = total - completed - failed;
+
         await offlineStorage.updateStagedItem({
           ...item,
           syncStatus: 'failed',
-          syncError: itemErr.message || "Network upload failed"
+          syncError: errMsg,
+          syncDiagnostics: {
+            httpStatus: diag.httpStatus,
+            stage: diag.stage,
+            photoSizes: diag.photoSizes,
+            timestamp: diag.timestamp
+          }
         });
+
         setSyncProgress(prev => ({
           ...prev,
           failed,
-          remaining,
-          message: `Uploading offline items: ${completed} of ${total} complete — ${remaining} remaining (${failed} failed)`
+          remaining: total - completed - failed,
+          message: `Uploading offline items: ${completed} of ${total} uploaded — ${total - completed - failed} remaining (${failed} failed)`
         }));
       }
     }
 
+    setSyncDiagnostics(diagnosticsList);
     await fetchItems();
     await fetchDashboardStats();
 
@@ -721,16 +924,16 @@ export default function App() {
       });
       setTimeout(() => {
         setSyncProgress(prev => prev.isSyncing ? prev : { ...prev, message: null });
-      }, 4000);
+      }, 5000);
     } else {
       setSyncProgress({
         isSyncing: false,
         waitingForConnection: false,
         total,
         completed,
-        remaining: 0,
+        remaining: total - completed - failed,
         failed,
-        message: `⚠️ ${failed} offline item(s) failed to upload. They remain saved locally and can be retried.`
+        message: `⚠️ ${failed} offline item(s) failed to upload (${completed} succeeded). Items remain safely saved on your device.`
       });
     }
   };
@@ -744,10 +947,13 @@ export default function App() {
     }
   };
 
-
   const compressPhotoTo2048 = (file) => {
     return new Promise((resolve) => {
-      if (!file || !file.type || !file.type.startsWith('image/')) {
+      const isImg = file && (
+        (file.type && file.type.startsWith('image/')) ||
+        /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name || '')
+      );
+      if (!isImg) {
         resolve(file);
         return;
       }
@@ -4039,6 +4245,219 @@ export default function App() {
             setCropModalTarget(null);
           }}
         />
+      )}
+
+      {/* In-Place Re-authentication Modal */}
+      {needsReauth && (
+        <div className="modal-overlay" style={{ zIndex: 9999 }}>
+          <div className="modal-card" style={{ maxWidth: '440px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3 style={{ margin: 0, color: 'var(--pine-deep)', fontSize: '1.25rem' }}>🔐 Sign In to Upload Items</h3>
+                <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Your session expired while offline. Your offline items remain 100% safe.
+                </p>
+              </div>
+              <button className="modal-close-btn" onClick={() => setNeedsReauth(false)}>✕</button>
+            </div>
+
+            <form onSubmit={handleInPlaceReauth} style={{ padding: '1.25rem' }}>
+              <div style={{ background: '#f8faf9', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.85rem', marginBottom: '1rem', fontSize: '0.88rem' }}>
+                <div><strong>Account:</strong> {currentUser?.email || 'dan@unclejim.estate'}</div>
+                <div style={{ color: 'var(--pine-primary)', fontWeight: 'bold', marginTop: '4px' }}>
+                  📦 {stagedItems.length} Offline Item(s) ready to upload
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '1.25rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                  Enter Password
+                </label>
+                <input
+                  type="password"
+                  autoFocus
+                  placeholder="••••••••"
+                  value={reauthPassword}
+                  onChange={e => setReauthPassword(e.target.value)}
+                  style={{ width: '100%', minHeight: '46px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '16px' }}
+                  required
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  onClick={() => setNeedsReauth(false)}
+                  disabled={isReauthenticating}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-green-senior"
+                  style={{ minHeight: '46px', padding: '0 1.25rem', fontSize: '0.95rem' }}
+                  disabled={isReauthenticating}
+                >
+                  {isReauthenticating ? 'Signing In...' : 'Sign In & Resume Upload ➔'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Detailed Offline Sync Diagnostics Modal */}
+      {showDiagnosticsModal && (
+        <div className="modal-overlay" style={{ zIndex: 9998 }} onClick={() => setShowDiagnosticsModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '680px', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3 style={{ margin: 0, color: 'var(--pine-deep)', fontSize: '1.3rem' }}>
+                  🔍 Offline Sync Diagnostics & Error Inspection
+                </h3>
+                <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Detailed inspection of all offline items waiting in your device's storage.
+                </p>
+              </div>
+              <button className="modal-close-btn" onClick={() => setShowDiagnosticsModal(false)}>✕</button>
+            </div>
+
+            <div className="modal-body" style={{ padding: '1.25rem', overflowY: 'auto' }}>
+              {/* Status Overview Card */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                <div style={{ background: '#f8faf9', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.75rem', textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: 'var(--pine-deep)' }}>{stagedItems.length}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Total Queue Items</div>
+                </div>
+                <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '0.75rem', textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#b91c1c' }}>{stagedItems.filter(i => i.syncStatus === 'failed').length}</div>
+                  <div style={{ fontSize: '0.78rem', color: '#b91c1c' }}>Failed Items</div>
+                </div>
+                <div style={{ background: '#fef3c7', border: '1px solid #fde68a', borderRadius: '8px', padding: '0.75rem', textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#b45309' }}>{stagedItems.filter(i => i.syncStatus !== 'failed').length}</div>
+                  <div style={{ fontSize: '0.78rem', color: '#b45309' }}>Pending Items</div>
+                </div>
+                <div style={{ background: '#d1e7dd', border: '1px solid #badbcc', borderRadius: '8px', padding: '0.75rem', textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#0f5132' }}>{navigator.onLine ? 'Online' : 'Offline'}</div>
+                  <div style={{ fontSize: '0.78rem', color: '#0f5132' }}>Wi-Fi State</div>
+                </div>
+              </div>
+
+              {/* Items List */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                {stagedItems.map((item, idx) => {
+                  let totalSizeBytes = 0;
+                  if (item.photos && item.photos.length > 0) {
+                    item.photos.forEach(p => {
+                      const b = p.data || p.file || p.blob;
+                      if (b && b.size) totalSizeBytes += b.size;
+                    });
+                  }
+                  if (item.croppedBlob && item.croppedBlob.size) {
+                    totalSizeBytes += item.croppedBlob.size;
+                  }
+                  const sizeFormatted = totalSizeBytes > 0 ? (totalSizeBytes > 1024 * 1024 ? `${(totalSizeBytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(totalSizeBytes / 1024)} KB`) : 'Unknown';
+
+                  return (
+                    <div
+                      key={item.id || idx}
+                      style={{
+                        background: item.syncStatus === 'failed' ? '#fff5f5' : '#ffffff',
+                        border: item.syncStatus === 'failed' ? '1px solid #fca5a5' : '1px solid var(--border-color)',
+                        borderRadius: '10px',
+                        padding: '1rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.45rem'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        <div style={{ fontWeight: 'bold', fontSize: '1rem', color: 'var(--pine-deep)' }}>
+                          #{idx + 1}. {item.title || 'Untitled Item'}
+                        </div>
+                        <span
+                          style={{
+                            fontSize: '0.75rem',
+                            fontWeight: 'bold',
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                            background: item.syncStatus === 'failed' ? '#fee2e2' : '#fef3c7',
+                            color: item.syncStatus === 'failed' ? '#b91c1c' : '#b45309',
+                            border: item.syncStatus === 'failed' ? '1px solid #fca5a5' : '1px solid #fde68a'
+                          }}
+                        >
+                          {item.syncStatus === 'failed' ? '⚠️ Upload Failed' : '⏳ Pending Upload'}
+                        </span>
+                      </div>
+
+                      {/* Error Information if Failed */}
+                      {item.syncError && (
+                        <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', borderRadius: '6px', padding: '0.5rem 0.75rem', fontSize: '0.82rem', fontFamily: 'monospace', wordBreak: 'break-word', marginTop: '4px' }}>
+                          <strong>Error Details:</strong> {item.syncError}
+                        </div>
+                      )}
+
+                      {/* Metadata Details */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.4rem', fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                        <div><strong>Local ID:</strong> <code style={{ fontSize: '0.76rem' }}>{item.id}</code></div>
+                        <div><strong>Category:</strong> {item.category_name || item.categoryId || 'None'}</div>
+                        <div><strong>Location:</strong> {item.locationInHouse || 'None'}</div>
+                        <div><strong>Photos:</strong> {item.photos?.length || 0} photo(s) {item.croppedBlob ? '+ custom crop' : ''}</div>
+                        <div><strong>Approx Size:</strong> {sizeFormatted}</div>
+                        <div><strong>Created:</strong> {item.createdAt ? new Date(item.createdAt).toLocaleTimeString() : 'N/A'}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {stagedItems.length === 0 && (
+                  <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
+                    All offline items have been uploaded! No pending items in storage.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', padding: '1rem 1.25rem' }}>
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={() => setShowDiagnosticsModal(false)}
+              >
+                Close Inspection
+              </button>
+
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {stagedItems.some(i => i.syncStatus === 'failed') && (
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    style={{ color: '#b91c1c', borderColor: '#b91c1c', fontWeight: 'bold' }}
+                    onClick={() => {
+                      setShowDiagnosticsModal(false);
+                      triggerSyncOfflineItems(true);
+                    }}
+                  >
+                    🔄 Retry Failed Items Only
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="btn-green-senior"
+                  style={{ minHeight: '44px', padding: '0 1.25rem' }}
+                  onClick={() => {
+                    setShowDiagnosticsModal(false);
+                    triggerSyncOfflineItems(false);
+                  }}
+                >
+                  📤 Upload All Staged Items ➔
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

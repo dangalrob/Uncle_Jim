@@ -557,36 +557,50 @@ app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'c
       ? await dbAll(`SELECT id, photo_url, thumbnail_url, is_primary FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId])
       : [];
 
-    if (originalFiles.length > 0) {
-      // If we are uploading new photos for an existing item, remove older placeholder/unwanted photos if replacing,
-      // or append if new. If existing photos already exist and we receive new files, we can insert them.
-      for (let i = 0; i < originalFiles.length; i++) {
-        const file = originalFiles[i];
-        const croppedFile = croppedFiles[i] || (i === 0 ? croppedFiles[0] : null);
+    const filesToProcess = originalFiles.length > 0 ? originalFiles : croppedFiles;
+
+    if (filesToProcess.length > 0) {
+      for (let i = 0; i < filesToProcess.length; i++) {
+        const file = filesToProcess[i];
+        const croppedFile = originalFiles.length > 0 ? (croppedFiles[i] || (i === 0 ? croppedFiles[0] : null)) : file;
         const thumbFilename = 'thumb-' + file.filename.replace(/\.[^/.]+$/, "") + '.webp';
         const thumbPath = path.join(THUMB_UPLOADS_DIR, thumbFilename);
 
-        // Generate high quality webp thumbnail preserving crop aspect ratio (fit: inside)
+        // Generate high quality webp thumbnail preserving crop aspect ratio (fit: inside) with fallback
         const sourceForThumb = croppedFile ? croppedFile.path : file.path;
-        await sharp(sourceForThumb)
-          .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
-          .toFormat('webp', { quality: 85 })
-          .toFile(thumbPath);
+        try {
+          await sharp(sourceForThumb)
+            .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
+            .toFormat('webp', { quality: 85 })
+            .toFile(thumbPath);
+        } catch (sharpErr) {
+          console.warn("Sharp thumbnail generation warning, using fallback copy:", sharpErr.message);
+          try {
+            fs.copyFileSync(sourceForThumb, thumbPath);
+          } catch (copyErr) {}
+        }
 
         let photoUrl = `/uploads/full/${file.filename}`;
         const originalPhotoUrl = `/uploads/full/${file.filename}`;
 
         // If a cropped version was provided, save the high-res cropped version to full uploads
-        if (croppedFile) {
+        if (croppedFile && croppedFile !== file) {
           const croppedFilename = 'crop-' + file.filename.replace(/\.[^/.]+$/, "") + '.webp';
           const croppedFullPath = path.join(FULL_UPLOADS_DIR, croppedFilename);
-          await sharp(croppedFile.path)
-            .toFormat('webp', { quality: 90 })
-            .toFile(croppedFullPath);
-          photoUrl = `/uploads/full/${croppedFilename}`;
+          try {
+            await sharp(croppedFile.path)
+              .toFormat('webp', { quality: 90 })
+              .toFile(croppedFullPath);
+            photoUrl = `/uploads/full/${croppedFilename}`;
+          } catch (sharpCropErr) {
+            console.warn("Sharp crop save warning, keeping source file:", sharpCropErr.message);
+            photoUrl = `/uploads/full/${file.filename}`;
+          }
+        } else if (croppedFile && originalFiles.length === 0) {
+          photoUrl = `/uploads/full/${file.filename}`;
         }
 
-        const thumbnailUrl = `/uploads/thumbs/${thumbFilename}`;
+        const thumbnailUrl = fs.existsSync(thumbPath) ? `/uploads/thumbs/${thumbFilename}` : photoUrl;
         const photoId = 'photo_' + Date.now() + '_' + i;
         const isPrimary = (existingPhotos.length === 0 && i === 0) ? 1 : 0;
 
