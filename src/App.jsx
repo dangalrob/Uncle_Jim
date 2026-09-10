@@ -9,7 +9,10 @@ import {
   LogOut, Activity
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
+import { thumbnailCache } from './services/thumbnailCache';
+import CachedThumbnail from './components/CachedThumbnail';
 import AdminWorkbench from './components/AdminWorkbench';
+import AdminReviewMode from './components/AdminReviewMode';
 import InstitutionPortal from './components/InstitutionPortal';
 import PhotoCropperModal from './components/PhotoCropperModal';
 
@@ -102,6 +105,15 @@ export default function App() {
   const userMenuRef = useRef(null);
   const cameraInputRef = useRef(null);
   const libraryInputRef = useRef(null);
+  const [adminReviewItemId, setAdminReviewItemId] = useState(null);
+  const [cacheStats, setCacheStats] = useState({ total: 0, cached: 0, updating: 0, remaining: 0, isComplete: true });
+
+  useEffect(() => {
+    const unsub = thumbnailCache.subscribe((stats) => {
+      setCacheStats(stats);
+    });
+    return unsub;
+  }, []);
 
   const handleNavigateHome = () => {
     setMobileNavOpen(false);
@@ -413,7 +425,12 @@ export default function App() {
       if (categoryFilter) url += `&category=${categoryFilter}`;
       if (statusFilter) url += `&status=${statusFilter}`;
       const res = await fetch(url);
-      if (res.ok) serverItems = await res.json();
+      if (res.ok) {
+        serverItems = await res.json();
+        if (Array.isArray(serverItems) && serverItems.length > 0) {
+          thumbnailCache.syncCatalog(serverItems);
+        }
+      }
     } catch (err) {
       console.warn("Could not fetch server items (may be offline):", err);
     }
@@ -1825,6 +1842,12 @@ export default function App() {
             </button>
 
             {currentUser?.role === 'admin' && (
+              <button className={`sidebar-item ${currentView === 'admin_review' ? 'active' : ''}`} onClick={() => { setAdminReviewItemId(null); setCurrentView('admin_review'); setMobileNavOpen(false); }}>
+                <CheckSquare size={18} /> Admin Review Mode
+              </button>
+            )}
+
+            {currentUser?.role === 'admin' && (
               <button className={`sidebar-item ${currentView === 'workbench' ? 'active' : ''}`} onClick={() => { setCurrentView('workbench'); setMobileNavOpen(false); }}>
                 <Sparkles size={18} /> AI Research Workbench
               </button>
@@ -1926,16 +1949,61 @@ export default function App() {
                 </div>
               </div>
 
-              {/* OFFLINE MODE TOGGLE SWITCH & STAGED QUEUE BANNER */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                <button
-                  className={`btn-outline ${offlineMode ? 'btn-amber-active' : ''}`}
-                  style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
-                  onClick={handleToggleOfflineMode}
-                >
-                  {offlineMode ? <WifiOff size={16} color="#d32f2f" /> : <Wifi size={16} color="#2e7d32" />}
-                  <span>{offlineMode ? 'Offline Mode: ON' : 'Offline Mode: OFF'}</span>
-                </button>
+                {/* OFFLINE MODE TOGGLE SWITCH & STAGED QUEUE BANNER */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  {/* PERSISTENT THUMBNAIL CACHE STATUS INDICATOR */}
+                  {cacheStats.total > 0 && (
+                    <div>
+                      {!cacheStats.isComplete ? (
+                        <div
+                          style={{
+                            fontSize: '0.78rem',
+                            fontWeight: 'bold',
+                            color: '#0277bd',
+                            background: '#e1f5fe',
+                            border: '1px solid #b3e5fc',
+                            padding: '0.35rem 0.75rem',
+                            borderRadius: '20px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px'
+                          }}
+                          title={`${cacheStats.cached} of ${cacheStats.total} photos stored persistently on laptop`}
+                        >
+                          <RefreshCw size={12} style={{ animation: 'spin 1.5s linear infinite' }} />
+                          <span>Updating photos: {cacheStats.remaining || cacheStats.updating} remaining</span>
+                        </div>
+                      ) : (
+                        <div
+                          style={{
+                            fontSize: '0.75rem',
+                            color: '#2e7d32',
+                            background: '#f1f8e9',
+                            border: '1px solid #dcedc8',
+                            padding: '0.3rem 0.65rem',
+                            borderRadius: '20px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            opacity: 0.85
+                          }}
+                          title="All thumbnails persistently cached in laptop IndexedDB"
+                        >
+                          <Check size={13} color="#2e7d32" />
+                          <span>Photos cached: {cacheStats.cached} / {cacheStats.total}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    className={`btn-outline ${offlineMode ? 'btn-amber-active' : ''}`}
+                    style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                    onClick={handleToggleOfflineMode}
+                  >
+                    {offlineMode ? <WifiOff size={16} color="#d32f2f" /> : <Wifi size={16} color="#2e7d32" />}
+                    <span>{offlineMode ? 'Offline Mode: ON' : 'Offline Mode: OFF'}</span>
+                  </button>
 
                 <div className="header-user-container" ref={userMenuRef}>
                   <button
@@ -2665,7 +2733,7 @@ export default function App() {
                 </div>
 
                 {/* Quick Filter Tabs */}
-                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', overflowX: 'auto', paddingBottom: '2px' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', overflowX: 'auto', paddingBottom: '2px', alignItems: 'center' }}>
                   <button
                     className={`btn-outline ${catalogInterestFilter === 'all' ? 'btn-green' : ''}`}
                     style={{ fontSize: '0.88rem', padding: '0.4rem 0.9rem', borderRadius: '20px', whiteSpace: 'nowrap' }}
@@ -2681,6 +2749,32 @@ export default function App() {
                     <Star size={15} fill={catalogInterestFilter === 'my_interests' ? '#fff' : '#f59e0b'} color="#f59e0b" />
                     My Interested Items ({myInterestsCount})
                   </button>
+
+                  {currentUser?.role === 'admin' && (
+                    <button
+                      className="btn-outline"
+                      style={{
+                        fontSize: '0.85rem',
+                        padding: '0.4rem 0.95rem',
+                        borderRadius: '20px',
+                        whiteSpace: 'nowrap',
+                        marginLeft: 'auto',
+                        fontWeight: 'bold',
+                        color: 'var(--pine-primary)',
+                        borderColor: 'var(--pine-primary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.4rem'
+                      }}
+                      onClick={() => {
+                        setAdminReviewItemId(null);
+                        setCurrentView('admin_review');
+                      }}
+                      title="Open rapid laptop review & cleanup mode"
+                    >
+                      <CheckSquare size={15} /> Admin Review Mode
+                    </button>
+                  )}
                 </div>
 
                 {displayedItems.length === 0 ? (
@@ -2727,24 +2821,37 @@ export default function App() {
                           justifyContent: 'center',
                           marginBottom: '0.65rem'
                         }}>
-                          <img
-                            src={item.primary_thumb || item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'}
+                          <CachedThumbnail
+                            url={item.primary_thumb || item.primary_photo}
+                            version={item.primary_thumb_version}
+                            alt={item.title || "Estate Item"}
                             style={{
                               width: '100%',
                               height: '100%',
-                              objectFit: 'contain',
-                              display: 'block'
+                              objectFit: 'contain'
                             }}
-                            alt={item.title || "Estate Item"}
                           />
                           {currentUser?.role === 'admin' && (
-                            <button
-                              onClick={(e) => handleDeleteItem(item.id, e)}
-                              style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(211,47,47,0.9)', color: '#fff', border: 'none', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 10 }}
-                              title="Delete Item"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            <div style={{ position: 'absolute', top: '8px', right: '8px', display: 'flex', gap: '4px', zIndex: 10 }}>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAdminReviewItemId(item.id);
+                                  setCurrentView('admin_review');
+                                }}
+                                style={{ background: 'rgba(255,255,255,0.92)', color: 'var(--pine-primary)', border: '1px solid #ccc', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                title="Clean in Admin Review Mode"
+                              >
+                                <Edit3 size={13} />
+                              </button>
+                              <button
+                                onClick={(e) => handleDeleteItem(item.id, e)}
+                                style={{ background: 'rgba(211,47,47,0.9)', color: '#fff', border: 'none', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                title="Delete Item"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
                           )}
                         </div>
                         <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{item.title || 'Untitled Item'}</div>
@@ -3397,8 +3504,9 @@ export default function App() {
                               style={{ padding: '0.85rem', display: 'flex', flexDirection: 'column', position: 'relative' }}
                             >
                               <div style={{ position: 'relative' }}>
-                                <img
-                                  src={item.primary_photo || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80'}
+                                <CachedThumbnail
+                                  url={item.primary_thumb || item.primary_photo}
+                                  version={item.primary_thumb_version}
                                   style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }}
                                   alt={item.title || "Estate Item"}
                                 />
@@ -3816,6 +3924,25 @@ export default function App() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* ADMIN REVIEW & CLEANUP MODE VIEW */}
+          {currentView === 'admin_review' && (
+            <AdminReviewMode
+              items={items}
+              categories={categories}
+              initialItemId={adminReviewItemId}
+              onSaveItem={async (id, updatedFields) => {
+                const res = await fetch(`/api/items/${id}`, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(updatedFields)
+                });
+                if (!res.ok) throw new Error("Failed to save review fields");
+                await fetchItems();
+              }}
+              onClose={() => setCurrentView('catalog')}
+            />
           )}
 
           {/* AI RESEARCH WORKBENCH VIEW */}

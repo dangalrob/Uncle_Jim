@@ -181,7 +181,10 @@ async function initDatabase() {
     db.run(`ALTER TABLE items ADD COLUMN institutional_candidate TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN institutional_name TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN client_id TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN era TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN updated_at DATETIME`, () => {});
     db.run(`ALTER TABLE item_photos ADD COLUMN original_photo_url TEXT`, () => {});
+    db.run(`ALTER TABLE item_photos ADD COLUMN updated_at DATETIME`, () => {});
 
     db.run(`CREATE TABLE IF NOT EXISTS draft_order (
       estate_id TEXT NOT NULL,
@@ -482,8 +485,12 @@ app.use(cors());
 app.use(cookieParser());
 app.use(express.json());
 
-// Serve static uploads
-app.use('/uploads', express.static(UPLOADS_DIR));
+// Serve static uploads with long-lived browser caching and ETags
+app.use('/uploads', express.static(UPLOADS_DIR, {
+  maxAge: '7d',
+  etag: true,
+  lastModified: true
+}));
 
 // Serve static assets from dist/
 app.use(express.static(path.join(__dirname, 'dist'), {
@@ -672,8 +679,8 @@ app.post('/api/items/rapid-capture', authenticateToken, requireRole(['admin', 'c
         const sourceForThumb = croppedFile ? croppedFile.path : file.path;
         try {
           await sharp(sourceForThumb)
-            .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
-            .toFormat('webp', { quality: 85 })
+            .resize(600, 600, { fit: 'inside', withoutEnlargement: true })
+            .toFormat('webp', { quality: 80 })
             .toFile(thumbPath);
         } catch (sharpErr) {
           console.warn("Sharp thumbnail generation warning, using fallback copy:", sharpErr.message);
@@ -766,6 +773,8 @@ app.get('/api/items', authenticateToken, async (req, res) => {
       SELECT i.*, c.name as category_name, c.icon as category_icon,
              (SELECT photo_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_photo,
              (SELECT thumbnail_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_thumb,
+             (SELECT id FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_photo_id,
+             (SELECT COALESCE(updated_at, created_at) FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_photo_updated_at,
              (SELECT COUNT(*) FROM interests WHERE item_id = i.id AND interest_level = 'interested') as interested_count,
              (SELECT COUNT(*) FROM interests WHERE item_id = i.id AND user_id = ? AND interest_level = 'interested') as user_interested,
              (SELECT GROUP_CONCAT(u.name, ', ') FROM interests int_sub JOIN users u ON int_sub.user_id = u.id WHERE int_sub.item_id = i.id AND int_sub.interest_level = 'interested') as interested_names,
@@ -812,10 +821,15 @@ app.get('/api/items', authenticateToken, async (req, res) => {
       const photosByItem = {};
       for (const p of allPhotos) {
         if (!photosByItem[p.item_id]) photosByItem[p.item_id] = [];
+        p.photo_version = `${p.id}_${(p.thumbnail_url || p.photo_url || '').replace(/[^a-zA-Z0-9]/g, '_')}_${p.updated_at || p.created_at || '1'}`;
         photosByItem[p.item_id].push(p);
       }
       for (const item of items) {
         item.photos = photosByItem[item.id] || [];
+        const pId = item.primary_photo_id || (item.photos[0]?.id) || 'none';
+        const pThumb = item.primary_thumb || (item.photos[0]?.thumbnail_url) || (item.primary_photo) || 'none';
+        const pUp = item.primary_photo_updated_at || (item.photos[0]?.updated_at) || item.updated_at || item.created_at || '1';
+        item.primary_thumb_version = `${pId}_${pThumb.replace(/[^a-zA-Z0-9]/g, '_')}_${pUp}`;
       }
     }
 
@@ -868,7 +882,7 @@ app.get('/api/items/:id', authenticateToken, async (req, res) => {
 
 app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor']), async (req, res) => {
   try {
-    const { title, categoryId, locationInHouse, location, condition, dimensions, weight, specialHandlingNotes, notes, description, storyText, provenanceSource, isHighValue, value, status, institutionalCandidate, institutional_candidate, institutionalName, institutional_name } = req.body;
+    const { title, era, categoryId, locationInHouse, location, condition, dimensions, weight, specialHandlingNotes, notes, description, storyText, provenanceSource, isHighValue, value, status, institutionalCandidate, institutional_candidate, institutionalName, institutional_name } = req.body;
     const itemId = req.params.id;
     const finalLocation = locationInHouse !== undefined ? locationInHouse : location;
     const finalNotes = specialHandlingNotes !== undefined ? specialHandlingNotes : notes;
@@ -878,6 +892,7 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
     await dbRun(`
       UPDATE items
       SET title = COALESCE(?, title),
+          era = COALESCE(?, era),
           category_id = COALESCE(?, category_id),
           location_in_house = COALESCE(?, location_in_house),
           condition = COALESCE(?, condition),
@@ -889,10 +904,12 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
           status = COALESCE(?, status),
           is_high_value = COALESCE(?, is_high_value),
           institutional_candidate = CASE WHEN ? = 1 THEN ? ELSE institutional_candidate END,
-          institutional_name = CASE WHEN ? = 1 THEN ? ELSE institutional_name END
+          institutional_name = CASE WHEN ? = 1 THEN ? ELSE institutional_name END,
+          updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND estate_id = ?
     `, [
       title !== undefined ? title : null,
+      era !== undefined ? era : null,
       categoryId !== undefined ? categoryId : null,
       finalLocation !== undefined ? finalLocation : null,
       condition !== undefined ? condition : null,
@@ -1097,8 +1114,8 @@ app.put('/api/items/:id/photos/:photoId/crop', authenticateToken, requireRole(['
 
     // Save thumbnail version from cropped file
     await sharp(req.file.path)
-      .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
-      .toFormat('webp', { quality: 85 })
+      .resize(600, 600, { fit: 'inside', withoutEnlargement: true })
+      .toFormat('webp', { quality: 80 })
       .toFile(thumbPath);
 
     // Clean up temporary uploaded file if in full uploads
@@ -1111,7 +1128,7 @@ app.put('/api/items/:id/photos/:photoId/crop', authenticateToken, requireRole(['
     const origUrl = photo.original_photo_url || photo.photo_url;
 
     await dbRun(
-      `UPDATE item_photos SET photo_url = ?, thumbnail_url = ?, original_photo_url = COALESCE(original_photo_url, ?) WHERE id = ?`,
+      `UPDATE item_photos SET photo_url = ?, thumbnail_url = ?, original_photo_url = COALESCE(original_photo_url, ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [newPhotoUrl, newThumbUrl, origUrl, photoId]
     );
 
@@ -1147,12 +1164,12 @@ app.post('/api/items/:id/photos/:photoId/restore-crop', authenticateToken, requi
     const thumbPath = path.join(THUMB_UPLOADS_DIR, thumbFilename);
 
     await sharp(originalFullPath)
-      .resize(800, 800, { fit: 'inside', withoutEnlargement: true })
-      .toFormat('webp', { quality: 85 })
+      .resize(600, 600, { fit: 'inside', withoutEnlargement: true })
+      .toFormat('webp', { quality: 80 })
       .toFile(thumbPath);
 
     const newThumbUrl = `/uploads/thumbs/${thumbFilename}`;
-    await dbRun(`UPDATE item_photos SET photo_url = ?, thumbnail_url = ? WHERE id = ?`, [originalUrl, newThumbUrl, photoId]);
+    await dbRun(`UPDATE item_photos SET photo_url = ?, thumbnail_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [originalUrl, newThumbUrl, photoId]);
 
     const allPhotos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId]);
     logAudit(req.user.estate_id, req.user.id, 'RESTORE_ORIGINAL_PHOTO', 'item_photos', photoId, { itemId });
