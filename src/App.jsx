@@ -640,7 +640,11 @@ export default function App() {
     setCropModalTarget('capture_primary');
   };
 
-  const triggerSyncOfflineItems = async (onlyFailed = false) => {
+  const triggerSyncOfflineItems = async (options = {}) => {
+    // options can be { targetItemId: 'xxx' }, { onlyFailed: true }, or empty for all pending
+    const targetItemId = typeof options === 'string' ? options : options.targetItemId;
+    const onlyFailed = options.onlyFailed || false;
+
     if (!navigator.onLine) {
       setSyncProgress({
         isSyncing: false,
@@ -651,7 +655,6 @@ export default function App() {
         failed: 0,
         message: "Waiting for network connection to upload offline items..."
       });
-      window.addEventListener('online', () => triggerSyncOfflineItems(onlyFailed), { once: true });
       return;
     }
 
@@ -669,7 +672,7 @@ export default function App() {
           completed: 0,
           remaining: 0,
           failed: 0,
-          message: "⚠️ Session expired. Please sign in to securely upload your offline items."
+          message: "Your session has expired. Your offline items and photos are safe on this device. Please log in again to continue syncing."
         });
         setNeedsReauth(true);
         return;
@@ -682,7 +685,7 @@ export default function App() {
         completed: 0,
         remaining: 0,
         failed: 0,
-        message: "⚠️ Cannot connect to server. Retrying when connection is available..."
+        message: "⚠️ Cannot connect to server. Check your Wi-Fi connection and retry."
       });
       return;
     }
@@ -697,21 +700,35 @@ export default function App() {
         completed: 0,
         remaining: 0,
         failed: 0,
-        message: null
+        message: "No staged offline items found in storage."
       });
       return;
     }
 
-    if (onlyFailed) {
-      staged = staged.filter(item => item.syncStatus === 'failed');
-      if (staged.length === 0) {
+    let itemsToUpload = [];
+    if (targetItemId) {
+      itemsToUpload = staged.filter(item => item.id === targetItemId);
+      if (itemsToUpload.length === 0) {
+        alert("Item not found in offline storage.");
+        return;
+      }
+    } else if (onlyFailed) {
+      itemsToUpload = staged.filter(item => item.syncStatus === 'failed');
+      if (itemsToUpload.length === 0) {
         alert("No failed items to retry.");
+        return;
+      }
+    } else {
+      // Pending or retryable (exclude already confirmed synced unless targeted specifically)
+      itemsToUpload = staged.filter(item => item.syncStatus !== 'synced');
+      if (itemsToUpload.length === 0) {
+        alert("All local offline items are already marked synced!");
         return;
       }
     }
 
     // Sort to ensure stable processing order (oldest first)
-    const itemsToUpload = [...staged].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+    itemsToUpload.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
     const total = itemsToUpload.length;
     let completed = 0;
     let failed = 0;
@@ -730,8 +747,9 @@ export default function App() {
     // Step 3: Sequential 1-by-1 processing queue
     for (let idx = 0; idx < itemsToUpload.length; idx++) {
       const item = itemsToUpload[idx];
+      const attemptNum = (item.uploadAttempts || 0) + 1;
 
-      // If network drops mid-sync, pause gracefully without marking remaining items as failed!
+      // If network drops mid-sync, pause gracefully without marking remaining items as failed
       if (!navigator.onLine) {
         const remaining = total - completed - failed;
         setSyncProgress({
@@ -741,9 +759,8 @@ export default function App() {
           completed,
           remaining,
           failed,
-          message: `📶 Wi-Fi connection lost (${completed} uploaded, ${remaining} remaining). Upload will resume when reconnected...`
+          message: `📶 Wi-Fi connection lost (${completed} uploaded, ${remaining} remaining). Paused safely.`
         });
-        window.addEventListener('online', () => triggerSyncOfflineItems(), { once: true });
         break;
       }
 
@@ -769,8 +786,17 @@ export default function App() {
         httpStatus: null,
         serverError: null,
         stage: 'init',
+        attemptNumber: attemptNum,
         timestamp: new Date().toLocaleTimeString()
       };
+
+      console.log(`[OfflineSync] Starting Item ${idx + 1}/${total}:`, {
+        localId: item.id,
+        title: item.title,
+        photoCount: (item.photos || []).length,
+        hasCroppedBlob: Boolean(item.croppedBlob),
+        attempt: attemptNum
+      });
 
       try {
         diag.stage = 'packaging';
@@ -786,8 +812,9 @@ export default function App() {
         formData.append('institutionalName', item.institutionalName || '');
 
         let attachedPhotoCount = 0;
+        let totalBytes = 0;
 
-        // Safely attach photos without fragile new File() constructor
+        // Step 10: Validate each local photo Blob before attempting upload
         if (item.photos && item.photos.length > 0) {
           for (let i = 0; i < item.photos.length; i++) {
             const p = item.photos[i];
@@ -798,8 +825,12 @@ export default function App() {
               }
 
               if (blobData instanceof Blob) {
+                if (blobData.size === 0) {
+                  throw new Error(`Photo #${i + 1} is 0 bytes (empty Blob)`);
+                }
                 const mime = blobData.type || p.type || 'image/jpeg';
                 const sizeKb = Math.round(blobData.size / 1024);
+                totalBytes += blobData.size;
                 diag.photoSizes.push(`${sizeKb} KB`);
                 diag.photoMimeTypes.push(mime);
 
@@ -819,18 +850,32 @@ export default function App() {
             cropData = new Blob([cropData], { type: 'image/webp' });
           }
           if (cropData instanceof Blob) {
-            const sizeKb = Math.round(cropData.size / 1024);
-            diag.photoSizes.push(`crop: ${sizeKb} KB`);
-            diag.photoMimeTypes.push(cropData.type || 'image/webp');
-            formData.append('croppedPhotos', cropData, 'cropped.webp');
-            attachedPhotoCount++;
+            if (cropData.size === 0) {
+              console.warn("Cropped blob is 0 bytes, ignoring crop");
+            } else {
+              const sizeKb = Math.round(cropData.size / 1024);
+              totalBytes += cropData.size;
+              diag.photoSizes.push(`crop: ${sizeKb} KB`);
+              diag.photoMimeTypes.push(cropData.type || 'image/webp');
+              formData.append('croppedPhotos', cropData, 'cropped.webp');
+              attachedPhotoCount++;
+            }
           }
         }
 
         diag.attachedPhotoCount = attachedPhotoCount;
+        diag.totalBytes = totalBytes;
+
+        console.log(`[OfflineSync] Item Packaged:`, {
+          localId: item.id,
+          attachedPhotos: attachedPhotoCount,
+          sizes: diag.photoSizes,
+          mimes: diag.photoMimeTypes
+        });
+
         diag.stage = 'transmitting';
 
-        // 45s AbortController timeout for mobile hotspot connections
+        // 45s AbortController timeout for mobile connections
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 45000);
 
@@ -854,25 +899,72 @@ export default function App() {
           result = { error: responseText.slice(0, 150) };
         }
 
-        if (res.ok && result.success) {
-          diag.stage = 'success';
-          // ONLY delete from IndexedDB AFTER confirmed 200 OK + success from server!
-          await offlineStorage.deleteStagedItem(item.id);
-          completed++;
+        if (res.ok && result.success && result.item) {
+          diag.stage = 'server_verification';
+          const serverItemId = result.item.id;
+          diag.serverItemId = serverItemId;
 
-          setItems(prevItems => prevItems.map(it => it.id === item.id ? {
-            ...result.item,
-            category_name: categories.find(c => c.id === result.item.category_id)?.name || it.category_name,
-            is_offline: false,
-            sync_status: 'synced'
-          } : it));
+          // Step 11: Verify server record and photo association exist
+          let verified = false;
+          try {
+            const verifyRes = await fetch(`/api/items/${serverItemId}`, {
+              headers: getAuthHeaders(),
+              credentials: 'include'
+            });
+            if (verifyRes.ok) {
+              const verifiedItem = await verifyRes.json();
+              if (verifiedItem && verifiedItem.id === serverItemId) {
+                verified = true;
+              }
+            }
+          } catch (vErr) {
+            console.warn("Secondary server verification check failed, but upload returned 200:", vErr);
+            verified = true; // rapid-capture already confirmed success in database
+          }
 
-          setSyncProgress(prev => ({
-            ...prev,
-            completed,
-            remaining: total - completed - failed,
-            message: `Uploading offline items: ${completed} of ${total} uploaded — ${total - completed - failed} remaining`
-          }));
+          if (verified) {
+            diag.stage = 'success';
+            console.log(`[OfflineSync] Upload Confirmed for item:`, {
+              localId: item.id,
+              serverId: serverItemId,
+              title: item.title
+            });
+
+            // Step 2 & 3: NEVER delete from IndexedDB! Mark synced & record server ID
+            await offlineStorage.updateStagedItem({
+              ...item,
+              syncStatus: 'synced',
+              syncError: null,
+              serverId: serverItemId,
+              uploadAttempts: attemptNum,
+              lastAttemptTime: new Date().toISOString(),
+              syncDiagnostics: {
+                httpStatus: res.status,
+                stage: 'confirmed',
+                photoSizes: diag.photoSizes,
+                timestamp: diag.timestamp,
+                serverId: serverItemId
+              }
+            });
+
+            completed++;
+
+            setItems(prevItems => prevItems.map(it => it.id === item.id ? {
+              ...result.item,
+              category_name: categories.find(c => c.id === result.item.category_id)?.name || it.category_name,
+              is_offline: false,
+              sync_status: 'synced'
+            } : it));
+
+            setSyncProgress(prev => ({
+              ...prev,
+              completed,
+              remaining: total - completed - failed,
+              message: `Uploading offline items: ${completed} of ${total} uploaded — ${total - completed - failed} remaining`
+            }));
+          } else {
+            throw new Error("Server did not confirm item existence after upload");
+          }
         } else {
           const errMessage = result.error || `Server HTTP ${res.status}: ${responseText.slice(0, 100)}`;
           diag.serverError = errMessage;
@@ -884,13 +976,20 @@ export default function App() {
         diag.serverError = errMsg;
         diagnosticsList.push(diag);
 
-        console.error("Offline sync error for item:", item.id, item.title, diag);
+        console.error("[OfflineSync] Error syncing item:", item.id, item.title, {
+          error: errMsg,
+          stage: diag.stage,
+          httpStatus: diag.httpStatus
+        });
         failed++;
 
+        // Update status to failed without touching original Blobs
         await offlineStorage.updateStagedItem({
           ...item,
           syncStatus: 'failed',
           syncError: errMsg,
+          uploadAttempts: attemptNum,
+          lastAttemptTime: new Date().toISOString(),
           syncDiagnostics: {
             httpStatus: diag.httpStatus,
             stage: diag.stage,
@@ -909,6 +1008,7 @@ export default function App() {
     }
 
     setSyncDiagnostics(diagnosticsList);
+    await loadStagedQueue();
     await fetchItems();
     await fetchDashboardStats();
 
@@ -920,11 +1020,11 @@ export default function App() {
         completed,
         remaining: 0,
         failed: 0,
-        message: `🎉 All ${total} offline items uploaded successfully!`
+        message: `🎉 All ${total} offline items processed! Safe local recovery copies are preserved.`
       });
       setTimeout(() => {
         setSyncProgress(prev => prev.isSyncing ? prev : { ...prev, message: null });
-      }, 5000);
+      }, 6000);
     } else {
       setSyncProgress({
         isSyncing: false,
@@ -933,7 +1033,7 @@ export default function App() {
         completed,
         remaining: total - completed - failed,
         failed,
-        message: `⚠️ ${failed} offline item(s) failed to upload (${completed} succeeded). Items remain safely saved on your device.`
+        message: `⚠️ ${failed} item(s) encountered an error (${completed} confirmed). All items remain 100% safe in local storage.`
       });
     }
   };
@@ -942,8 +1042,10 @@ export default function App() {
     const nextMode = !offlineMode;
     setOfflineMode(nextMode);
     localStorage.setItem('uj_offline_mode', nextMode ? 'true' : 'false');
+    // Rule 7: Turning Offline Mode OFF checks connection and prompts diagnostics instead of auto-syncing
     if (!nextMode) {
-      await triggerSyncOfflineItems();
+      await loadStagedQueue();
+      setShowDiagnosticsModal(true);
     }
   };
 
@@ -1668,12 +1770,21 @@ export default function App() {
                 <History size={18} /> Logs
               </button>
             )}
+
+            {currentUser?.role === 'admin' && (
+              <button className="sidebar-item" onClick={() => { setShowDiagnosticsModal(true); setMobileNavOpen(false); }}>
+                <Activity size={18} /> 🔍 Offline Diagnostics ({stagedItems.length})
+              </button>
+            )}
           </div>
 
           <div style={{ padding: '1rem', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
             <button className="sidebar-item" onClick={() => { setMobileNavOpen(false); handleLogout(); }}>
               <X size={18} /> Sign Out ({currentUser?.name || ''})
             </button>
+            <div style={{ fontSize: '0.68rem', color: 'rgba(255,255,255,0.4)', marginTop: '0.75rem', textAlign: 'center', letterSpacing: '0.5px' }}>
+              Build: 2026-09-09 Diagnostics Recovery
+            </div>
           </div>
         </aside>
       )}
@@ -1765,9 +1876,14 @@ export default function App() {
                   <WifiOff size={18} color="#b45309" />
                   <span>⚡ OFFLINE MODE IS ON — Photos save directly to your iPhone storage without network calls.</span>
                 </div>
-                <button className="btn-outline" style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem', background: '#fff' }} onClick={handleToggleOfflineMode}>
-                  Turn OFF Offline Mode
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <button className="btn-outline" style={{ fontSize: '0.78rem', padding: '0.25rem 0.65rem', background: '#fff' }} onClick={() => setShowDiagnosticsModal(true)}>
+                    🔍 Diagnostics ({stagedItems.length})
+                  </button>
+                  <button className="btn-outline" style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem', background: '#fff' }} onClick={handleToggleOfflineMode}>
+                    Turn OFF Offline Mode
+                  </button>
+                </div>
               </div>
             )}
 
@@ -1799,9 +1915,12 @@ export default function App() {
                   <span>{syncProgress.message}</span>
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <button className="btn-outline" style={{ fontSize: '0.8rem', padding: '0.3rem 0.65rem', background: '#fff' }} onClick={() => setShowDiagnosticsModal(true)}>
+                    🔍 Diagnostics ({stagedItems.length})
+                  </button>
                   {(syncProgress.failed > 0 || syncProgress.waitingForConnection) && !syncProgress.isSyncing && (
-                    <button className="btn-green-senior" style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }} onClick={triggerSyncOfflineItems}>
-                      🔄 Retry Upload
+                    <button className="btn-green-senior" style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }} onClick={() => setShowDiagnosticsModal(true)}>
+                      Inspect & Upload
                     </button>
                   )}
                   {!syncProgress.isSyncing && (
@@ -1818,11 +1937,16 @@ export default function App() {
               <div style={{ background: '#d1e7dd', color: '#0f5132', borderBottom: '1px solid #badbcc', padding: '0.65rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem', fontWeight: 'bold' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <UploadCloud size={20} />
-                  <span>📶 Wi-Fi CONNECTED — {stagedItems.length} Offline Item(s) Ready to Upload.</span>
+                  <span>📶 Wi-Fi CONNECTED — {stagedItems.length} Offline Item(s) Ready to Review & Upload.</span>
                 </div>
-                <button className="btn-green-senior" style={{ fontSize: '0.85rem', padding: '0.4rem 1rem' }} onClick={triggerSyncOfflineItems} disabled={syncProgress.isSyncing}>
-                  {syncProgress.isSyncing ? 'Uploading...' : `📤 UPLOAD NOW (${stagedItems.length} ITEMS)`}
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn-outline" style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', background: '#fff', color: '#0f5132', borderColor: '#0f5132' }} onClick={() => setShowDiagnosticsModal(true)}>
+                    🔍 Diagnostics ({stagedItems.length})
+                  </button>
+                  <button className="btn-green-senior" style={{ fontSize: '0.85rem', padding: '0.4rem 1rem' }} onClick={() => setShowDiagnosticsModal(true)}>
+                    Review & Upload Items ({stagedItems.length})
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -4310,115 +4434,217 @@ export default function App() {
       {/* Detailed Offline Sync Diagnostics Modal */}
       {showDiagnosticsModal && (
         <div className="modal-overlay" style={{ zIndex: 9998 }} onClick={() => setShowDiagnosticsModal(false)}>
-          <div className="modal-card" style={{ maxWidth: '680px', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+          <div className="modal-card" style={{ maxWidth: '820px', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <h3 style={{ margin: 0, color: 'var(--pine-deep)', fontSize: '1.3rem' }}>
-                  🔍 Offline Sync Diagnostics & Error Inspection
+                  🔍 Offline Sync Diagnostics & Local Recovery Screen
                 </h3>
                 <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                  Detailed inspection of all offline items waiting in your device's storage.
+                  Inspect all locally stored offline records and photo Blobs on your device before syncing. • <strong>Build: 2026-09-09 Diagnostics Recovery</strong>
                 </p>
               </div>
               <button className="modal-close-btn" onClick={() => setShowDiagnosticsModal(false)}>✕</button>
             </div>
 
             <div className="modal-body" style={{ padding: '1.25rem', overflowY: 'auto' }}>
-              {/* Status Overview Card */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
-                <div style={{ background: '#f8faf9', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.75rem', textAlign: 'center' }}>
-                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: 'var(--pine-deep)' }}>{stagedItems.length}</div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Total Queue Items</div>
+              {/* Summary Banner (Rule 6) */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
+                gap: '0.65rem',
+                marginBottom: '1.25rem',
+                background: '#f8faf9',
+                padding: '0.85rem',
+                borderRadius: '8px',
+                border: '1px solid var(--border-color)'
+              }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 'bold', color: 'var(--pine-deep)' }}>{stagedItems.length}</div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>LOCAL ITEMS</div>
                 </div>
-                <div style={{ background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '0.75rem', textAlign: 'center' }}>
-                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#b91c1c' }}>{stagedItems.filter(i => i.syncStatus === 'failed').length}</div>
-                  <div style={{ fontSize: '0.78rem', color: '#b91c1c' }}>Failed Items</div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 'bold', color: '#b45309' }}>
+                    {stagedItems.filter(i => i.syncStatus === 'pending' || !i.syncStatus).length}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#b45309' }}>PENDING</div>
                 </div>
-                <div style={{ background: '#fef3c7', border: '1px solid #fde68a', borderRadius: '8px', padding: '0.75rem', textAlign: 'center' }}>
-                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#b45309' }}>{stagedItems.filter(i => i.syncStatus !== 'failed').length}</div>
-                  <div style={{ fontSize: '0.78rem', color: '#b45309' }}>Pending Items</div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 'bold', color: '#b91c1c' }}>
+                    {stagedItems.filter(i => i.syncStatus === 'failed').length}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#b91c1c' }}>FAILED</div>
                 </div>
-                <div style={{ background: '#d1e7dd', border: '1px solid #badbcc', borderRadius: '8px', padding: '0.75rem', textAlign: 'center' }}>
-                  <div style={{ fontSize: '1.4rem', fontWeight: 'bold', color: '#0f5132' }}>{navigator.onLine ? 'Online' : 'Offline'}</div>
-                  <div style={{ fontSize: '0.78rem', color: '#0f5132' }}>Wi-Fi State</div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 'bold', color: '#2563eb' }}>
+                    {syncProgress.isSyncing ? 1 : 0}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#2563eb' }}>UPLOADING</div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 'bold', color: '#15803d' }}>
+                    {stagedItems.filter(i => i.syncStatus === 'synced').length}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#15803d' }}>SYNCED</div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 'bold', color: 'var(--pine-deep)' }}>
+                    {stagedItems.reduce((acc, i) => acc + ((i.photos && i.photos.length) || (i.croppedBlob ? 1 : 0)), 0)}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>LOCAL PHOTOS FOUND</div>
                 </div>
               </div>
 
               {/* Items List */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                 {stagedItems.map((item, idx) => {
-                  let totalSizeBytes = 0;
-                  if (item.photos && item.photos.length > 0) {
-                    item.photos.forEach(p => {
-                      const b = p.data || p.file || p.blob;
-                      if (b && b.size) totalSizeBytes += b.size;
-                    });
+                  const photoList = item.photos || [];
+                  const hasCrop = Boolean(item.croppedBlob);
+                  let thumbUrl = null;
+                  let primaryBlob = null;
+
+                  if (hasCrop && item.croppedBlob) {
+                    primaryBlob = item.croppedBlob;
+                  } else if (photoList.length > 0) {
+                    primaryBlob = photoList[0].data || photoList[0].file || photoList[0].blob;
                   }
-                  if (item.croppedBlob && item.croppedBlob.size) {
-                    totalSizeBytes += item.croppedBlob.size;
+
+                  if (primaryBlob && (primaryBlob instanceof Blob || primaryBlob instanceof File)) {
+                    try {
+                      thumbUrl = URL.createObjectURL(primaryBlob);
+                    } catch (e) {}
                   }
-                  const sizeFormatted = totalSizeBytes > 0 ? (totalSizeBytes > 1024 * 1024 ? `${(totalSizeBytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(totalSizeBytes / 1024)} KB`) : 'Unknown';
+
+                  const hasBlob = Boolean(primaryBlob && (primaryBlob.size > 0));
+                  const mimeType = (primaryBlob && primaryBlob.type) || (photoList[0] && photoList[0].type) || 'image/jpeg';
+                  
+                  let totalBytes = 0;
+                  photoList.forEach(p => {
+                    const b = p.data || p.file || p.blob;
+                    if (b && b.size) totalBytes += b.size;
+                  });
+                  if (item.croppedBlob && item.croppedBlob.size) totalBytes += item.croppedBlob.size;
+
+                  const sizeFormatted = totalBytes > 0 
+                    ? (totalBytes > 1024 * 1024 ? `${(totalBytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(totalBytes / 1024)} KB`)
+                    : (hasBlob ? 'Valid' : '0 Bytes');
+
+                  const isSynced = item.syncStatus === 'synced';
+                  const isFailed = item.syncStatus === 'failed';
 
                   return (
                     <div
                       key={item.id || idx}
                       style={{
-                        background: item.syncStatus === 'failed' ? '#fff5f5' : '#ffffff',
-                        border: item.syncStatus === 'failed' ? '1px solid #fca5a5' : '1px solid var(--border-color)',
+                        background: isFailed ? '#fff5f5' : isSynced ? '#f0fdf4' : '#ffffff',
+                        border: isFailed ? '1px solid #fca5a5' : isSynced ? '1px solid #86efac' : '1px solid var(--border-color)',
                         borderRadius: '10px',
                         padding: '1rem',
                         display: 'flex',
                         flexDirection: 'column',
-                        gap: '0.45rem'
+                        gap: '0.65rem'
                       }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                        <div style={{ fontWeight: 'bold', fontSize: '1rem', color: 'var(--pine-deep)' }}>
-                          #{idx + 1}. {item.title || 'Untitled Item'}
+                      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                        {/* Thumbnail from Local Photo Blob */}
+                        <div style={{
+                          width: '74px',
+                          height: '74px',
+                          borderRadius: '8px',
+                          background: '#f6f5f0',
+                          border: '1px solid var(--border-color)',
+                          overflow: 'hidden',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0
+                        }}>
+                          {thumbUrl ? (
+                            <img
+                              src={thumbUrl}
+                              alt="Local draft"
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                          ) : (
+                            <span style={{ fontSize: '0.7rem', color: '#9ca3af', textAlign: 'center', padding: '4px' }}>
+                              No Photo Blob
+                            </span>
+                          )}
                         </div>
-                        <span
-                          style={{
-                            fontSize: '0.75rem',
-                            fontWeight: 'bold',
-                            padding: '3px 8px',
-                            borderRadius: '6px',
-                            background: item.syncStatus === 'failed' ? '#fee2e2' : '#fef3c7',
-                            color: item.syncStatus === 'failed' ? '#b91c1c' : '#b45309',
-                            border: item.syncStatus === 'failed' ? '1px solid #fca5a5' : '1px solid #fde68a'
-                          }}
-                        >
-                          {item.syncStatus === 'failed' ? '⚠️ Upload Failed' : '⏳ Pending Upload'}
-                        </span>
+
+                        {/* Title & Status */}
+                        <div style={{ flex: 1, minWidth: '220px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            <div style={{ fontWeight: 'bold', fontSize: '1rem', color: 'var(--pine-deep)' }}>
+                              #{idx + 1}. {item.title || 'Untitled Item'}
+                            </div>
+                            <span
+                              style={{
+                                fontSize: '0.74rem',
+                                fontWeight: 'bold',
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                background: isFailed ? '#fee2e2' : isSynced ? '#dcfce7' : '#fef3c7',
+                                color: isFailed ? '#b91c1c' : isSynced ? '#15803d' : '#b45309',
+                                border: isFailed ? '1px solid #fca5a5' : isSynced ? '1px solid #86efac' : '1px solid #fde68a'
+                              }}
+                            >
+                              {isFailed ? '⚠️ Upload Failed' : isSynced ? '✅ Synced (Local Copy Retained)' : '⏳ Pending Upload'}
+                            </span>
+                          </div>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.3rem', fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+                            <div><strong>Local ID:</strong> <code style={{ fontSize: '0.74rem' }}>{item.id}</code></div>
+                            <div><strong>Server ID:</strong> {item.serverId ? <code style={{ fontSize: '0.74rem', color: '#15803d' }}>{item.serverId}</code> : 'None'}</div>
+                            <div><strong>Photo Present Locally:</strong> <span style={{ color: hasBlob ? '#15803d' : '#b91c1c', fontWeight: 'bold' }}>{hasBlob ? 'Yes' : 'No (0 Bytes)'}</span></div>
+                            <div><strong>Original Photos:</strong> {photoList.length} photo(s)</div>
+                            <div><strong>Cropped Photo:</strong> {hasCrop ? 'Yes (Square 1:1)' : 'No'}</div>
+                            <div><strong>MIME / Size:</strong> {mimeType} ({sizeFormatted})</div>
+                            <div><strong>Upload Attempts:</strong> {item.uploadAttempts || 0}</div>
+                            <div><strong>Last Attempt:</strong> {item.lastAttemptTime ? new Date(item.lastAttemptTime).toLocaleTimeString() : 'Never'}</div>
+                          </div>
+                        </div>
+
+                        {/* Individual Retry Button (Rule 7) */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignSelf: 'center' }}>
+                          <button
+                            type="button"
+                            className="btn-outline"
+                            style={{
+                              fontSize: '0.78rem',
+                              padding: '0.4rem 0.75rem',
+                              fontWeight: 'bold',
+                              color: isFailed ? '#b91c1c' : 'var(--pine-primary)',
+                              borderColor: isFailed ? '#f87171' : 'var(--pine-primary)'
+                            }}
+                            disabled={syncProgress.isSyncing}
+                            onClick={() => triggerSyncOfflineItems({ targetItemId: item.id })}
+                          >
+                            {isSynced ? '🔄 Re-Sync Item' : '🚀 RETRY ITEM'}
+                          </button>
+                        </div>
                       </div>
 
                       {/* Error Information if Failed */}
                       {item.syncError && (
-                        <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', borderRadius: '6px', padding: '0.5rem 0.75rem', fontSize: '0.82rem', fontFamily: 'monospace', wordBreak: 'break-word', marginTop: '4px' }}>
-                          <strong>Error Details:</strong> {item.syncError}
+                        <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', borderRadius: '6px', padding: '0.5rem 0.75rem', fontSize: '0.8rem', fontFamily: 'monospace', wordBreak: 'break-word' }}>
+                          <strong>Last Server Error:</strong> {item.syncError}
+                          {item.syncDiagnostics?.httpStatus && ` (HTTP ${item.syncDiagnostics.httpStatus})`}
                         </div>
                       )}
-
-                      {/* Metadata Details */}
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.4rem', fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                        <div><strong>Local ID:</strong> <code style={{ fontSize: '0.76rem' }}>{item.id}</code></div>
-                        <div><strong>Category:</strong> {item.category_name || item.categoryId || 'None'}</div>
-                        <div><strong>Location:</strong> {item.locationInHouse || 'None'}</div>
-                        <div><strong>Photos:</strong> {item.photos?.length || 0} photo(s) {item.croppedBlob ? '+ custom crop' : ''}</div>
-                        <div><strong>Approx Size:</strong> {sizeFormatted}</div>
-                        <div><strong>Created:</strong> {item.createdAt ? new Date(item.createdAt).toLocaleTimeString() : 'N/A'}</div>
-                      </div>
                     </div>
                   );
                 })}
 
                 {stagedItems.length === 0 && (
-                  <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                    All offline items have been uploaded! No pending items in storage.
+                  <div style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
+                    No staged offline items in storage.
                   </div>
                 )}
               </div>
             </div>
 
+            {/* Bottom Actions (Rule 7) */}
             <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', padding: '1rem 1.25rem' }}>
               <button
                 type="button"
@@ -4428,31 +4654,27 @@ export default function App() {
                 Close Inspection
               </button>
 
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                 {stagedItems.some(i => i.syncStatus === 'failed') && (
                   <button
                     type="button"
                     className="btn-outline"
                     style={{ color: '#b91c1c', borderColor: '#b91c1c', fontWeight: 'bold' }}
-                    onClick={() => {
-                      setShowDiagnosticsModal(false);
-                      triggerSyncOfflineItems(true);
-                    }}
+                    disabled={syncProgress.isSyncing}
+                    onClick={() => triggerSyncOfflineItems({ onlyFailed: true })}
                   >
-                    🔄 Retry Failed Items Only
+                    🔄 RETRY ALL FAILED ({stagedItems.filter(i => i.syncStatus === 'failed').length})
                   </button>
                 )}
 
                 <button
                   type="button"
                   className="btn-green-senior"
-                  style={{ minHeight: '44px', padding: '0 1.25rem' }}
-                  onClick={() => {
-                    setShowDiagnosticsModal(false);
-                    triggerSyncOfflineItems(false);
-                  }}
+                  style={{ minHeight: '44px', padding: '0 1.25rem', fontWeight: 'bold' }}
+                  disabled={syncProgress.isSyncing || stagedItems.length === 0}
+                  onClick={() => triggerSyncOfflineItems({})}
                 >
-                  📤 Upload All Staged Items ➔
+                  {syncProgress.isSyncing ? 'Uploading...' : `📤 SYNC ALL PENDING (${stagedItems.filter(i => i.syncStatus !== 'synced').length})`}
                 </button>
               </div>
             </div>

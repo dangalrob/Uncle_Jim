@@ -395,7 +395,20 @@ app.use(express.json());
 
 // Serve static uploads
 app.use('/uploads', express.static(UPLOADS_DIR));
-app.use(express.static(path.join(__dirname, 'dist')));
+
+// Serve static assets from dist/
+app.use(express.static(path.join(__dirname, 'dist'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('index.html')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+    } else if (filePath.includes(path.sep + 'assets' + path.sep)) {
+      // Hashed assets (e.g. index-DyVRqmqL.js) can be cached immutably
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    }
+  }
+}));
 
 // Authentication Middleware
 const authenticateToken = async (req, res, next) => {
@@ -1837,8 +1850,11 @@ app.get('/api/admin/audit-logs', authenticateToken, requireRole(['admin']), asyn
   }
 });
 
-// Fallback to index.html for SPA routes
+// Fallback to index.html for SPA routes (strictly no-cache for index.html)
 app.get('*', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
