@@ -79,7 +79,7 @@ export default function AdminReviewMode({
     const missingCat = items.filter(i => !i.category_id && !i.category_name).length;
     const missingVal = items.filter(i => !i.value || i.value.trim() === '').length;
     const missingTitle = items.filter(i => !i.title || i.title.trim() === '' || i.title.toLowerCase() === 'untitled item').length;
-    const institutional = items.filter(i => ['Recommended', 'Requested'].includes(i.institutional_candidate || i.institutionalCandidate)).length;
+    const institutional = items.filter(i => ['Maritime Museum', 'Library'].includes(i.institutional_candidate || i.institutionalCandidate)).length;
     const notReleased = items.filter(i => i.status !== 'released').length;
     const uploadPending = items.filter(i => i.is_offline || i.sync_status === 'pending').length;
     
@@ -116,7 +116,7 @@ export default function AdminReviewMode({
         case 'missing_title':
           return !item.title || item.title.trim() === '' || item.title.toLowerCase() === 'untitled item';
         case 'institutional':
-          return ['Recommended', 'Requested'].includes(item.institutional_candidate || item.institutionalCandidate);
+          return ['Maritime Museum', 'Library'].includes(item.institutional_candidate || item.institutionalCandidate);
         case 'not_released':
           return item.status !== 'released';
         case 'upload_pending':
@@ -374,7 +374,7 @@ export default function AdminReviewMode({
                 const isReleased = item.status === 'released';
                 const isPendingUpload = item.is_offline || item.sync_status === 'pending';
                 const rowState = rowSaveStates[item.id];
-                const instCandidate = item.institutional_candidate || item.institutionalCandidate || 'None';
+                const instCandidate = item.institutional_candidate || item.institutionalCandidate || '';
 
                 return (
                   <tr
@@ -513,20 +513,16 @@ export default function AdminReviewMode({
                           fontSize: '0.82rem',
                           borderRadius: '4px',
                           border: '1px solid #d1d5db',
-                          background: instCandidate !== 'None' ? '#f0fdf4' : '#fff',
-                          color: instCandidate !== 'None' ? '#15803d' : '#4b5563',
-                          fontWeight: instCandidate !== 'None' ? 'bold' : 'normal'
+                          background: ['Maritime Museum', 'Library'].includes(instCandidate) ? '#f0fdf4' : '#fff',
+                          color: ['Maritime Museum', 'Library'].includes(instCandidate) ? '#15803d' : '#4b5563',
+                          fontWeight: ['Maritime Museum', 'Library'].includes(instCandidate) ? 'bold' : 'normal'
                         }}
                       >
-                        <option value="None">None (Family)</option>
-                        <option value="Recommended">🏛️ Recommended</option>
-                        <option value="Requested">🏛️ Requested</option>
+                        <option value="">-- Select Candidate --</option>
+                        <option value="No">No</option>
+                        <option value="Maritime Museum">Maritime Museum</option>
+                        <option value="Library">Library</option>
                       </select>
-                      {instCandidate !== 'None' && item.institutional_name && (
-                        <span style={{ fontSize: '0.7rem', color: '#15803d', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {item.institutional_name}
-                        </span>
-                      )}
                     </td>
 
                     {/* Family Review Status (Release / Unrelease) */}
@@ -896,7 +892,7 @@ function DrillDownModal({
         weight: item.weight || '',
         description: item.description || item.special_handling_notes || item.notes || '',
         story: item.story || item.story_text || '',
-        institutionalCandidate: item.institutional_candidate || item.institutionalCandidate || 'None',
+        institutionalCandidate: item.institutional_candidate || item.institutionalCandidate || '',
         institutionalName: item.institutional_name || item.institutionalName || '',
         status: item.status || 'draft'
       });
@@ -1128,24 +1124,13 @@ function DrillDownModal({
             </div>
           </div>
 
-          {/* SECTION 2: CLASSIFICATION, LOCATION & STATUS */}
+          {/* SECTION 2: CLASSIFICATION & STATUS */}
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '1rem' }}>
             <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.9rem', color: 'var(--pine-deep)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              2. Classification, Status & Location
+              2. Classification & Status
             </h4>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr', gap: '0.85rem', marginBottom: '0.75rem' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', marginBottom: '3px' }}>Location in Residence</label>
-                <input
-                  type="text"
-                  value={formData.locationInHouse}
-                  onChange={(e) => handleChange('locationInHouse', e.target.value)}
-                  placeholder="e.g. Living Room Mantle, Workshop"
-                  style={{ width: '100%', padding: '0.5rem 0.65rem', fontSize: '0.86rem', borderRadius: '6px', border: '1px solid #d1d5db' }}
-                />
-              </div>
-
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem', marginBottom: '0.75rem' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', marginBottom: '3px' }}>Condition</label>
                 <select
@@ -1181,26 +1166,16 @@ function DrillDownModal({
                 <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', marginBottom: '4px' }}>
                   🏛️ Institutional Candidate
                 </label>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <select
-                    value={formData.institutionalCandidate}
-                    onChange={(e) => handleChange('institutionalCandidate', e.target.value)}
-                    style={{ padding: '0.4rem', fontSize: '0.82rem', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff' }}
-                  >
-                    <option value="None">None (Family)</option>
-                    <option value="Recommended">Recommended for Museum</option>
-                    <option value="Requested">Requested by Museum</option>
-                  </select>
-                  {formData.institutionalCandidate !== 'None' && (
-                    <input
-                      type="text"
-                      value={formData.institutionalName}
-                      onChange={(e) => handleChange('institutionalName', e.target.value)}
-                      placeholder="Institution Name..."
-                      style={{ flex: 1, padding: '0.4rem', fontSize: '0.82rem', borderRadius: '4px', border: '1px solid #d1d5db' }}
-                    />
-                  )}
-                </div>
+                <select
+                  value={formData.institutionalCandidate || ''}
+                  onChange={(e) => handleChange('institutionalCandidate', e.target.value)}
+                  style={{ width: '100%', padding: '0.4rem', fontSize: '0.82rem', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff' }}
+                >
+                  <option value="">-- Select Candidate --</option>
+                  <option value="No">No</option>
+                  <option value="Maritime Museum">Maritime Museum</option>
+                  <option value="Library">Library</option>
+                </select>
               </div>
 
               {/* Family Release Status */}

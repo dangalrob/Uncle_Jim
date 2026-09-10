@@ -117,6 +117,10 @@ export default function App() {
 
   const handleNavigateHome = () => {
     setMobileNavOpen(false);
+    setAdminEditingItem(null);
+    setSelectedCatalogItem(null);
+    setDetailItem(null);
+    setAdminReviewItemId(null);
     if (currentUser?.role === 'admin') {
       setCurrentView('dashboard');
     } else if (currentUser?.role === 'institution') {
@@ -1252,7 +1256,7 @@ export default function App() {
     setEditFormStatus(item.status || 'draft');
     setEditFormDescription(item.description || item.special_handling_notes || item.notes || '');
     setEditFormStory(item.story || item.story_text || '');
-    setEditFormInstitutionalCandidate(item.institutional_candidate || item.institutionalCandidate || 'None');
+    setEditFormInstitutionalCandidate(item.institutional_candidate || item.institutionalCandidate || '');
     setEditFormInstitutionalName(item.institutional_name || item.institutionalName || '');
     setEditFormPhotos(item.photos || (item.primary_photo ? [{ id: 'prim', photo_url: item.primary_photo, thumbnail_url: item.primary_thumb || item.primary_photo, is_primary: 1 }] : []));
 
@@ -1277,7 +1281,7 @@ export default function App() {
         setEditFormDescription(fullItem.description || fullItem.special_handling_notes || '');
         const story = fullItem.stories && fullItem.stories.length > 0 ? fullItem.stories[0].story_text : (fullItem.story || '');
         setEditFormStory(story || '');
-        setEditFormInstitutionalCandidate(fullItem.institutional_candidate || 'None');
+        setEditFormInstitutionalCandidate(fullItem.institutional_candidate || '');
         setEditFormInstitutionalName(fullItem.institutional_name || '');
         setEditFormPhotos(fullItem.photos || []);
       }
@@ -1822,12 +1826,20 @@ export default function App() {
       )}
 
       {/* SIDEBAR NAVIGATION (Admin, Mobile Drawer, & All Views) */}
-      {currentUser && currentView !== 'login' && (
+      {currentUser && currentView !== 'login' && currentView !== 'admin_review' && (
         <aside className={`sidebar ${mobileNavOpen ? 'mobile-nav-open' : ''}`}>
-          <div className="sidebar-header">
+          <div
+            className="sidebar-header"
+            onClick={handleNavigateHome}
+            role="button"
+            tabIndex={0}
+            title="Return to Main Dashboard"
+            aria-label="Return to Main Dashboard"
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleNavigateHome(); }}
+          >
             <Trees className="sidebar-logo" color="var(--gold-accent)" />
             <div className="sidebar-title">Uncle Jim's Estate</div>
-            <button className="mobile-close-btn" onClick={() => setMobileNavOpen(false)}>
+            <button className="mobile-close-btn" onClick={(e) => { e.stopPropagation(); setMobileNavOpen(false); }} aria-label="Close menu">
               <X size={20} color="#fff" />
             </button>
           </div>
@@ -1931,11 +1943,21 @@ export default function App() {
           <div>
             <header className="top-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <button className="mobile-toggle-btn" onClick={() => setMobileNavOpen(!mobileNavOpen)}>
-                  <Menu size={22} color="var(--pine-deep)" />
-                </button>
+                {currentView !== 'admin_review' && (
+                  <button className="mobile-toggle-btn" onClick={() => setMobileNavOpen(!mobileNavOpen)} aria-label="Toggle navigation menu">
+                    <Menu size={22} color="var(--pine-deep)" />
+                  </button>
+                )}
 
-                <div className="header-brand">
+                <div
+                  className="header-brand"
+                  onClick={handleNavigateHome}
+                  role="button"
+                  tabIndex={0}
+                  title="Return to Main Dashboard"
+                  aria-label="Return to Main Dashboard"
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleNavigateHome(); }}
+                >
                   <Trees className="header-logo-icon" color="var(--pine-primary)" />
                   <div className="header-title-box">
                     <span className="header-title">Uncle Jim's Estate</span>
@@ -2614,11 +2636,6 @@ export default function App() {
                     <textarea className="form-field-textarea" rows="3" value={itemNotes} placeholder="General description, details, provenance notes..." onChange={e => setItemNotes(e.target.value)}></textarea>
                   </div>
 
-                  <div className="form-field-group">
-                    <label className="form-field-label">Location in House (optional)</label>
-                    <input type="text" className="form-field-input" value={itemLocation} placeholder="e.g. Living Room, Attic, Master Bedroom" onChange={e => setItemLocation(e.target.value)} />
-                  </div>
-
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', marginTop: '1.5rem' }}>
                     <button
                       className="btn-modal-primary"
@@ -2897,9 +2914,9 @@ export default function App() {
 
 
                         {/* Institutional Candidate Badge */}
-                        {item.institutional_candidate && item.institutional_candidate !== 'None' && (
+                        {item.institutional_candidate && ['Maritime Museum', 'Library'].includes(item.institutional_candidate) && (
                           <div style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '2px 8px', borderRadius: '4px', marginTop: '4px' }}>
-                            🏛️ {item.institutional_candidate === 'Other' ? (item.institutional_name || 'Institution') : item.institutional_candidate}
+                            🏛️ {item.institutional_candidate}
                           </div>
                         )}
 
@@ -3057,7 +3074,6 @@ export default function App() {
                         <table className="details-table">
                           <tbody>
                             <tr><td className="label">Category</td><td className="val">{currentReviewItem?.category_name || "—"}</td></tr>
-                            <tr><td className="label">Location</td><td className="val">{currentReviewItem?.location_in_house || "—"}</td></tr>
                             <tr><td className="label">Value</td><td className="val">{currentReviewItem?.value ? (currentReviewItem.value.startsWith('$') ? currentReviewItem.value : `$${currentReviewItem.value}`) : "—"}</td></tr>
                             <tr><td className="label">Dimensions</td><td className="val">{currentReviewItem?.dimensions || "—"}</td></tr>
                             <tr><td className="label">Condition</td><td className="val">{currentReviewItem?.condition || "—"}</td></tr>
@@ -3088,9 +3104,9 @@ export default function App() {
 
                     {/* Mockup 7: Who's Interested & Decision Panel */}
                     <div className="decision-panel">
-                      {currentReviewItem?.institutional_candidate && currentReviewItem.institutional_candidate !== 'None' && (
+                      {currentReviewItem?.institutional_candidate && ['Maritime Museum', 'Library'].includes(currentReviewItem.institutional_candidate) && (
                         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '4px 10px', borderRadius: '6px', marginBottom: '0.75rem' }}>
-                          🏛️ Institutional Candidate: {currentReviewItem.institutional_candidate === 'Other' ? (currentReviewItem.institutional_name || 'Institution') : currentReviewItem.institutional_candidate}
+                          🏛️ Institutional Candidate: {currentReviewItem.institutional_candidate}
                         </div>
                       )}
 
@@ -3522,9 +3538,9 @@ export default function App() {
                               </div>
 
                               {/* Institutional Candidate Tag */}
-                              {item.institutional_candidate && item.institutional_candidate !== 'None' && (
+                              {item.institutional_candidate && ['Maritime Museum', 'Library'].includes(item.institutional_candidate) && (
                                 <div style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '2px 8px', borderRadius: '4px', marginBottom: '4px' }}>
-                                  🏛️ {item.institutional_candidate === 'Other' ? (item.institutional_name || 'Institution') : item.institutional_candidate}
+                                  🏛️ {item.institutional_candidate}
                                 </div>
                               )}
 
@@ -4039,7 +4055,6 @@ export default function App() {
                       <img src={item.primary_photo || OFFLINE_THUMB} style={{ width: '100px', height: '90px', objectFit: 'cover', borderRadius: '8px' }} alt={item.title} />
                       <div style={{ flex: 1 }}>
                         <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.25rem', color: 'var(--pine-deep)' }}>{item.title}</h3>
-                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>Location: {item.location_in_house}</div>
                         {item.comment && (
                           <div style={{ fontSize: '0.9rem', fontStyle: 'italic', color: '#234e38', background: '#e8f0ec', padding: '0.4rem 0.75rem', borderRadius: '6px', display: 'inline-block' }}>
                             "{item.comment}"
@@ -4506,38 +4521,14 @@ export default function App() {
                   <label className="form-field-label">Institutional Candidate</label>
                   <select
                     className="form-field-select"
-                    value={editFormInstitutionalCandidate}
+                    value={editFormInstitutionalCandidate || ''}
                     onChange={(e) => setEditFormInstitutionalCandidate(e.target.value)}
                   >
-                    <option value="None">None</option>
-                    <option value="Manitowish Waters Library">Manitowish Waters Library</option>
+                    <option value="">-- Select Candidate --</option>
+                    <option value="No">No</option>
                     <option value="Maritime Museum">Maritime Museum</option>
-                    <option value="Other">Other</option>
+                    <option value="Library">Library</option>
                   </select>
-                </div>
-
-                {editFormInstitutionalCandidate === 'Other' && (
-                  <div className="form-field-group">
-                    <label className="form-field-label">Custom Institution Name</label>
-                    <input
-                      type="text"
-                      className="form-field-input"
-                      placeholder="e.g. Northwoods Historical Society"
-                      value={editFormInstitutionalName}
-                      onChange={(e) => setEditFormInstitutionalName(e.target.value)}
-                    />
-                  </div>
-                )}
-
-                <div className="form-field-group">
-                  <label className="form-field-label">Location in Estate</label>
-                  <input
-                    type="text"
-                    className="form-field-input"
-                    placeholder="e.g. Living Room, Attic"
-                    value={editFormLocation}
-                    onChange={(e) => setEditFormLocation(e.target.value)}
-                  />
                 </div>
 
                 <div className="form-field-group">

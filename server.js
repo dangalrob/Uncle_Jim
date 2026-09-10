@@ -231,22 +231,26 @@ async function initDatabase() {
         ['cat_4', 'estate_uncle_jim', 'Artwork & Framed Prints', '🎨'],
         ['cat_5', 'estate_uncle_jim', 'Memorabilia & Keepsakes', '💎'],
         ['cat_6', 'estate_uncle_jim', 'Household & Kitchenware', '🍽️'],
-        ['cat_packers', 'estate_uncle_jim', 'Packers', '🏈']
+        ['cat_packers', 'estate_uncle_jim', 'Packers', '🏈'],
+        ['cat_guns', 'estate_uncle_jim', 'Guns', '🎯'],
+        ['cat_other', 'estate_uncle_jim', 'Other', '📦']
       ];
       for (const [id, eId, name, icon] of cats) {
         await dbRun(`INSERT INTO categories (id, estate_id, name, icon) VALUES (?, ?, ?, ?)`, [id, eId, name, icon]);
       }
     }
 
-    // Ensure 'Packers' category exists in existing database
-    const packersCat = await dbGet(`SELECT id FROM categories WHERE name = 'Packers'`);
-    if (!packersCat) {
-      await dbRun(`INSERT INTO categories (id, estate_id, name, icon) VALUES (?, ?, ?, ?)`, [
-        'cat_packers',
-        'estate_uncle_jim',
-        'Packers',
-        '🏈'
-      ]);
+    // Ensure 'Packers', 'Guns', and 'Other' categories exist in existing database
+    const extraCategories = [
+      ['cat_packers', 'estate_uncle_jim', 'Packers', '🏈'],
+      ['cat_guns', 'estate_uncle_jim', 'Guns', '🎯'],
+      ['cat_other', 'estate_uncle_jim', 'Other', '📦']
+    ];
+    for (const [id, eId, name, icon] of extraCategories) {
+      const existing = await dbGet(`SELECT id FROM categories WHERE name = ?`, [name]);
+      if (!existing) {
+        await dbRun(`INSERT INTO categories (id, estate_id, name, icon) VALUES (?, ?, ?, ?)`, [id, eId, name, icon]);
+      }
     }
 
     // Seed Users
