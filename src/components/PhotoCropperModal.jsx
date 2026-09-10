@@ -1,4 +1,4 @@
-﻿import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ZoomIn, ZoomOut, Check, X, RotateCcw, Crop } from 'lucide-react';
 
 /**
@@ -319,33 +319,48 @@ export default function PhotoCropperModal({
 
       const realX = Math.max(0, Math.round(crop.x * scaleX));
       const realY = Math.max(0, Math.round(crop.y * scaleY));
-      const realW = Math.min(imgLayout.naturalWidth - realX, Math.round(crop.width * scaleX));
-      const realH = Math.min(imgLayout.naturalHeight - realY, Math.round(crop.height * scaleY));
+      const sourceW = Math.min(imgLayout.naturalWidth - realX, Math.round(crop.width * scaleX));
+      const sourceH = Math.min(imgLayout.naturalHeight - realY, Math.round(crop.height * scaleY));
+
+      // Limit max dimension to 2048px (2K HD estate inventory resolution)
+      const MAX_DIM = 2048;
+      let outW = sourceW;
+      let outH = sourceH;
+      if (outW > MAX_DIM || outH > MAX_DIM) {
+        if (outW > outH) {
+          outH = Math.round((outH * MAX_DIM) / outW);
+          outW = MAX_DIM;
+        } else {
+          outW = Math.round((outW * MAX_DIM) / outH);
+          outH = MAX_DIM;
+        }
+      }
 
       const canvas = document.createElement('canvas');
-      canvas.width = realW;
-      canvas.height = realH;
+      canvas.width = outW;
+      canvas.height = outH;
       const ctx = canvas.getContext('2d');
 
       if (!ctx) throw new Error('Canvas 2D context unavailable');
 
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, realX, realY, realW, realH, 0, 0, realW, realH);
+      ctx.drawImage(img, realX, realY, sourceW, sourceH, 0, 0, outW, outH);
 
+      // Export as high quality JPEG (82%) to prevent massive uncompressed PNGs on iOS WebKit
       const blob = await new Promise((resolve, reject) => {
         canvas.toBlob(
           (b) => {
             if (b) resolve(b);
             else {
-              canvas.toBlob((jpgB) => {
-                if (jpgB) resolve(jpgB);
-                else reject(new Error('Canvas empty'));
-              }, 'image/jpeg', 0.92);
+              canvas.toBlob((webpB) => {
+                if (webpB) resolve(webpB);
+                else reject(new Error('Canvas export empty'));
+              }, 'image/webp', 0.85);
             }
           },
-          'image/webp',
-          0.92
+          'image/jpeg',
+          0.82
         );
       });
 

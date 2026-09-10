@@ -433,7 +433,13 @@ const upload = multer({
 
 // Controlled Multer middleware wrapper for Rapid Capture
 const handleRapidUpload = (req, res, next) => {
+  const reqStart = Date.now();
+  const cType = req.headers['content-type'] ? req.headers['content-type'].split(';')[0] : 'unknown';
+  const cLength = req.headers['content-length'] ? `${Math.round(req.headers['content-length'] / 1024)} KB` : 'unknown';
+  console.log(`[RapidCapture Incoming]: Method=${req.method} Path=${req.path} ContentType=${cType} ContentLength=${cLength}`);
+
   upload.any()(req, res, (err) => {
+    const duration = Date.now() - reqStart;
     if (err) {
       const errorPayload = {
         name: err.name,
@@ -446,10 +452,11 @@ const handleRapidUpload = (req, res, next) => {
         field: err.field || null,
         contentType: req.headers['content-type'] ? req.headers['content-type'].split(';')[0] : null,
         contentLength: req.headers['content-length'] || null,
+        durationMs: duration,
         stack: err.stack
       };
 
-      console.error("[RapidCapture Multer Error]:", errorPayload);
+      console.error(`[RapidCapture Multer Error after ${duration}ms]:`, errorPayload);
       lastServerError = {
         timestamp: new Date().toISOString(),
         ...errorPayload
@@ -461,9 +468,11 @@ const handleRapidUpload = (req, res, next) => {
         code: errorPayload.code,
         message: err.message,
         phase: errorPayload.phase,
-        field: errorPayload.field
+        field: errorPayload.field,
+        durationMs: duration
       });
     }
+    console.log(`[RapidCapture Multipart Parsed]: Files=${req.files?.length || 0} BodyKeys=${Object.keys(req.body).length} Duration=${duration}ms`);
     next();
   });
 };

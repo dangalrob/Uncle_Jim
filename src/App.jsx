@@ -640,6 +640,102 @@ export default function App() {
     setCropModalTarget('capture_primary');
   };
 
+  // Safe In-Memory Upload Derivative Generator:
+  // Decodes an existing local Blob, resizes to max 2048px (2K HD), and exports as high-quality JPEG (~350–600 KB).
+  // CRITICAL: NEVER modifies, overwrites, or deletes the original Blob in IndexedDB.
+  const createUploadDerivative = (blobData, preferredName = 'photo.jpg', maxDim = 2048, quality = 0.82) => {
+    return new Promise((resolve) => {
+      if (!blobData || !(blobData instanceof Blob)) {
+        resolve({ file: null, originalBytes: 0, originalMime: 'none', derivativeBytes: 0, derivativeMime: 'none', status: 'no_blob' });
+        return;
+      }
+
+      const originalBytes = blobData.size;
+      const originalMime = blobData.type || 'image/jpeg';
+      let cleanName = (preferredName || 'photo').replace(/\.[^/.]+$/, "");
+
+      const makeFallback = (statusMsg = 'fallback_original') => {
+        const ext = originalMime.includes('png') ? '.png' : originalMime.includes('webp') ? '.webp' : '.jpg';
+        const fileObj = (blobData instanceof File) ? blobData : new File([blobData], `${cleanName}${ext}`, { type: originalMime });
+        return {
+          file: fileObj,
+          originalBytes,
+          originalMime,
+          derivativeBytes: fileObj.size,
+          derivativeMime: originalMime,
+          status: statusMsg
+        };
+      };
+
+      try {
+        const objectUrl = URL.createObjectURL(blobData);
+        const img = new Image();
+
+        img.onload = () => {
+          try {
+            URL.revokeObjectURL(objectUrl);
+            let width = img.naturalWidth || img.width || 0;
+            let height = img.naturalHeight || img.height || 0;
+
+            if (!width || !height) {
+              resolve(makeFallback('invalid_dimensions'));
+              return;
+            }
+
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+
+            canvas.toBlob((derivativeBlob) => {
+              if (derivativeBlob && derivativeBlob.size > 0) {
+                const derivativeFile = new File([derivativeBlob], `${cleanName}.jpg`, {
+                  type: 'image/jpeg',
+                  lastModified: Date.now()
+                });
+                resolve({
+                  file: derivativeFile,
+                  originalBytes,
+                  originalMime,
+                  derivativeBytes: derivativeFile.size,
+                  derivativeMime: 'image/jpeg',
+                  status: 'derivative_created'
+                });
+              } else {
+                resolve(makeFallback('canvas_blob_failed'));
+              }
+            }, 'image/jpeg', quality);
+          } catch (canvasErr) {
+            console.warn("[UploadDerivative] Canvas processing error, using fallback:", canvasErr);
+            resolve(makeFallback('canvas_error'));
+          }
+        };
+
+        img.onerror = (err) => {
+          URL.revokeObjectURL(objectUrl);
+          console.warn("[UploadDerivative] Image load error, using fallback:", err);
+          resolve(makeFallback('decode_error'));
+        };
+
+        img.src = objectUrl;
+      } catch (err) {
+        console.warn("[UploadDerivative] Top-level error in derivative creation, using fallback:", err);
+        resolve(makeFallback('exception'));
+      }
+    });
+  };
+
   const triggerSyncOfflineItems = async (options = {}) => {
     // options can be { targetItemId: 'xxx' }, { onlyFailed: true }, or empty for all pending
     const targetItemId = typeof options === 'string' ? options : options.targetItemId;
@@ -814,7 +910,8 @@ export default function App() {
         let attachedPhotoCount = 0;
         let totalBytes = 0;
 
-        // Step 10: Validate each local photo Blob before attempting upload
+        // Step 10: Safely generate temporary in-memory upload derivatives
+        // CRITICAL: Does NOT modify, replace, or overwrite the original master Blobs in IndexedDB
         if (item.photos && item.photos.length > 0) {
           for (let i = 0; i < item.photos.length; i++) {
             const p = item.photos[i];
@@ -828,62 +925,69 @@ export default function App() {
                 if (blobData.size === 0) {
                   throw new Error(`Photo #${i + 1} is 0 bytes (empty Blob)`);
                 }
-                const mime = blobData.type || p.type || 'image/jpeg';
-                const sizeKb = Math.round(blobData.size / 1024);
-                totalBytes += blobData.size;
-                diag.photoSizes.push(`${sizeKb} KB`);
-                diag.photoMimeTypes.push(mime);
 
-                let fileName = p.name || `photo_${i}.jpg`;
-                if (!fileName.includes('.')) fileName += '.jpg';
-                const fileObj = (typeof File !== 'undefined' && blobData instanceof Blob && !(blobData instanceof File))
-                  ? new File([blobData], fileName, { type: mime })
-                  : blobData;
-                formData.append('photos', fileObj, fileName);
+                diag.stage = 'generating_derivative';
+                const origKb = Math.round(blobData.size / 1024);
+                const origFormatted = blobData.size > 1024 * 1024 ? `${(blobData.size / (1024 * 1024)).toFixed(1)} MB` : `${origKb} KB`;
+                diag.originalBlobSize = origFormatted;
+                diag.originalMime = blobData.type || p.type || 'image/jpeg';
+
+                const derivResult = await createUploadDerivative(blobData, p.name || `photo_${i}.jpg`, 2048, 0.82);
+                const fileToUpload = derivResult.file;
+                const derivKb = Math.round(fileToUpload.size / 1024);
+                const derivFormatted = fileToUpload.size > 1024 * 1024 ? `${(fileToUpload.size / (1024 * 1024)).toFixed(1)} MB` : `${derivKb} KB`;
+
+                diag.derivativeSize = derivFormatted;
+                diag.derivativeMime = derivResult.derivativeMime;
+                diag.compressionStatus = derivResult.status;
+                diag.photoSizes.push(`orig: ${origFormatted} -> deriv: ${derivFormatted}`);
+                diag.photoMimeTypes.push(derivResult.derivativeMime);
+
+                totalBytes += fileToUpload.size;
+                formData.append('photos', fileToUpload, fileToUpload.name);
                 attachedPhotoCount++;
               }
             }
           }
         }
 
-        // Safely attach croppedPhotoBlob
+        // Safely generate derivative for croppedPhotoBlob if present
         if (item.croppedBlob) {
           let cropData = item.croppedBlob;
           if (cropData instanceof ArrayBuffer || ArrayBuffer.isView(cropData)) {
             cropData = new Blob([cropData], { type: 'image/webp' });
           }
-          if (cropData instanceof Blob) {
-            if (cropData.size === 0) {
-              console.warn("Cropped blob is 0 bytes, ignoring crop");
-            } else {
-              const sizeKb = Math.round(cropData.size / 1024);
-              totalBytes += cropData.size;
-              diag.photoSizes.push(`crop: ${sizeKb} KB`);
-              diag.photoMimeTypes.push(cropData.type || 'image/webp');
-              const cropFile = (typeof File !== 'undefined' && cropData instanceof Blob && !(cropData instanceof File))
-                ? new File([cropData], 'cropped.webp', { type: cropData.type || 'image/webp' })
-                : cropData;
-              formData.append('croppedPhotos', cropFile, 'cropped.webp');
-              attachedPhotoCount++;
-            }
+          if (cropData instanceof Blob && cropData.size > 0) {
+            diag.stage = 'generating_crop_derivative';
+            const cropDerivResult = await createUploadDerivative(cropData, 'cropped.jpg', 1200, 0.85);
+            const cropFile = cropDerivResult.file;
+            const cropKb = Math.round(cropFile.size / 1024);
+            const cropFormatted = cropFile.size > 1024 * 1024 ? `${(cropFile.size / (1024 * 1024)).toFixed(1)} MB` : `${cropKb} KB`;
+
+            totalBytes += cropFile.size;
+            diag.photoSizes.push(`crop: ${cropFormatted}`);
+            diag.photoMimeTypes.push(cropDerivResult.derivativeMime);
+            formData.append('croppedPhotos', cropFile, cropFile.name);
+            attachedPhotoCount++;
           }
         }
 
         diag.attachedPhotoCount = attachedPhotoCount;
         diag.totalBytes = totalBytes;
 
-        console.log(`[OfflineSync] Item Packaged:`, {
+        console.log(`[OfflineSync] Item Packaged with Derivatives:`, {
           localId: item.id,
           attachedPhotos: attachedPhotoCount,
-          sizes: diag.photoSizes,
-          mimes: diag.photoMimeTypes
+          originalSize: diag.originalBlobSize,
+          derivativeSize: diag.derivativeSize,
+          totalBytesSent: totalBytes
         });
 
         diag.stage = 'transmitting';
 
-        // 45s AbortController timeout for mobile connections
+        // 60s timeout for mobile upload
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 45000);
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
 
         const res = await fetch('/api/items/rapid-capture', {
           method: 'POST',
@@ -947,6 +1051,11 @@ export default function App() {
               syncDiagnostics: {
                 httpStatus: res.status,
                 stage: 'confirmed',
+                originalBlobSize: diag.originalBlobSize || 'Unknown',
+                originalMime: diag.originalMime || 'image/jpeg',
+                derivativeSize: diag.derivativeSize || 'None',
+                derivativeMime: diag.derivativeMime || 'image/jpeg',
+                compressionStatus: diag.compressionStatus || 'completed',
                 photoSizes: diag.photoSizes,
                 timestamp: diag.timestamp,
                 serverId: serverItemId
@@ -978,7 +1087,7 @@ export default function App() {
         }
       } catch (itemErr) {
         const isAbort = itemErr.name === 'AbortError';
-        const errMsg = isAbort ? 'Upload timed out (45s)' : (itemErr.message || 'Network upload failed');
+        const errMsg = isAbort ? 'Upload timed out (60s)' : (itemErr.message || 'Network upload failed');
         diag.serverError = errMsg;
         diagnosticsList.push(diag);
 
@@ -999,8 +1108,12 @@ export default function App() {
           syncDiagnostics: {
             httpStatus: diag.httpStatus,
             stage: diag.stage,
+            originalBlobSize: diag.originalBlobSize || 'Unknown',
+            derivativeSize: diag.derivativeSize || 'None',
+            compressionStatus: diag.compressionStatus || 'failed',
             photoSizes: diag.photoSizes,
-            timestamp: diag.timestamp
+            timestamp: diag.timestamp,
+            serverError: errMsg
           }
         });
 
@@ -4599,35 +4712,46 @@ export default function App() {
                             </span>
                           </div>
 
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.3rem', fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.35rem', fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.45rem', background: '#fdfcf7', padding: '0.6rem 0.75rem', borderRadius: '8px', border: '1px solid #f1ede2' }}>
                             <div><strong>Local ID:</strong> <code style={{ fontSize: '0.74rem' }}>{item.id}</code></div>
-                            <div><strong>Server ID:</strong> {item.serverId ? <code style={{ fontSize: '0.74rem', color: '#15803d' }}>{item.serverId}</code> : 'None'}</div>
-                            <div><strong>Photo Present Locally:</strong> <span style={{ color: hasBlob ? '#15803d' : '#b91c1c', fontWeight: 'bold' }}>{hasBlob ? 'Yes' : 'No (0 Bytes)'}</span></div>
-                            <div><strong>Original Photos:</strong> {photoList.length} photo(s)</div>
-                            <div><strong>Cropped Photo:</strong> {hasCrop ? 'Yes (Square 1:1)' : 'No'}</div>
-                            <div><strong>MIME / Size:</strong> {mimeType} ({sizeFormatted})</div>
+                            <div><strong>Server ID:</strong> {item.serverId ? <code style={{ fontSize: '0.74rem', color: '#15803d', fontWeight: 'bold' }}>{item.serverId}</code> : <span style={{ color: '#9ca3af' }}>None</span>}</div>
+                            <div><strong>Local Photo Exists:</strong> <span style={{ color: hasBlob ? '#15803d' : '#b91c1c', fontWeight: 'bold' }}>{hasBlob ? 'Yes' : 'No (0 Bytes)'}</span></div>
+                            <div><strong>Original Photos:</strong> {photoList.length} photo(s) {hasCrop ? '+ 1:1 crop' : ''}</div>
+                            <div><strong>ORIGINAL Local Size:</strong> <span style={{ fontWeight: 'bold', color: '#1e293b' }}>{sizeFormatted}</span></div>
+                            <div><strong>Original MIME:</strong> <code>{mimeType}</code></div>
+                            <div><strong>Upload Derivative:</strong> <span style={{ color: '#2563eb', fontWeight: 'bold' }}>{item.syncDiagnostics?.derivativeSize || (hasBlob ? 'Target ~350–600 KB' : 'N/A')}</span></div>
+                            <div><strong>Derivative MIME:</strong> <code>{item.syncDiagnostics?.derivativeMime || (hasBlob ? 'image/jpeg' : 'N/A')}</code></div>
+                            <div><strong>Compression:</strong> <span style={{ color: item.syncDiagnostics?.compressionStatus === 'derivative_created' ? '#15803d' : '#2563eb', fontWeight: 'bold' }}>{item.syncDiagnostics?.compressionStatus || (hasBlob ? 'Ready (non-destructive derivative)' : 'No photo')}</span></div>
                             <div><strong>Upload Attempts:</strong> {item.uploadAttempts || 0}</div>
-                            <div><strong>Last Attempt:</strong> {item.lastAttemptTime ? new Date(item.lastAttemptTime).toLocaleTimeString() : 'Never'}</div>
+                            <div><strong>Last Attempt:</strong> {item.lastAttemptTime ? new Date(item.lastAttemptTime).toLocaleTimeString() : 'Not started'}</div>
+                            <div><strong>Server Response:</strong> {item.syncDiagnostics?.httpStatus ? <span style={{ fontWeight: 'bold', color: item.syncDiagnostics.httpStatus === 200 ? '#15803d' : '#b91c1c' }}>HTTP {item.syncDiagnostics.httpStatus}</span> : 'None'}</div>
                           </div>
                         </div>
 
-                        {/* Individual Retry Button (Rule 7) */}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignSelf: 'center' }}>
+                        {/* Safe Single Item Upload Button */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignSelf: 'center', minWidth: '150px' }}>
                           <button
                             type="button"
                             className="btn-outline"
                             style={{
-                              fontSize: '0.78rem',
-                              padding: '0.4rem 0.75rem',
+                              fontSize: '0.8rem',
+                              padding: '0.5rem 0.85rem',
                               fontWeight: 'bold',
-                              color: isFailed ? '#b91c1c' : 'var(--pine-primary)',
-                              borderColor: isFailed ? '#f87171' : 'var(--pine-primary)'
+                              color: isSynced ? '#15803d' : isFailed ? '#b91c1c' : 'var(--pine-primary)',
+                              borderColor: isSynced ? '#86efac' : isFailed ? '#f87171' : 'var(--pine-primary)',
+                              background: '#fff',
+                              borderRadius: '8px',
+                              boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                              cursor: syncProgress.isSyncing ? 'not-allowed' : 'pointer'
                             }}
                             disabled={syncProgress.isSyncing}
                             onClick={() => triggerSyncOfflineItems({ targetItemId: item.id })}
                           >
-                            {isSynced ? '🔄 Re-Sync Item' : '🚀 RETRY ITEM'}
+                            {isSynced ? '🔄 Re-Sync This Item' : '⚡ Test Upload One Item'}
                           </button>
+                          <span style={{ fontSize: '0.68rem', color: '#64748b', textAlign: 'center' }}>
+                            {isSynced ? 'Already confirmed on server' : 'Uploads ONLY this item safely'}
+                          </span>
                         </div>
                       </div>
 
