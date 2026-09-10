@@ -1847,12 +1847,6 @@ export default function App() {
               </button>
             )}
 
-            {currentUser?.role === 'admin' && (
-              <button className={`sidebar-item ${currentView === 'workbench' ? 'active' : ''}`} onClick={() => { setCurrentView('workbench'); setMobileNavOpen(false); }}>
-                <Sparkles size={18} /> AI Research Workbench
-              </button>
-            )}
-
             {(currentUser?.role === 'admin' || currentUser?.role === 'reviewer' || currentUser?.role === 'contributor') && (
               <button className={`sidebar-item ${currentView === 'catalog' ? 'active' : ''}`} onClick={() => { setCurrentView('catalog'); setMobileNavOpen(false); }}>
                 <Package size={18} /> Inventory Catalog
@@ -2333,10 +2327,10 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="attention-item" style={{ cursor: 'pointer' }} onClick={() => setCurrentView('workbench')}>
+                  <div className="attention-item" style={{ cursor: 'pointer' }} onClick={() => { setAdminReviewItemId(null); setCurrentView('admin_review'); }}>
                     <div className="attention-bullet bullet-orange"></div>
                     <div style={{ flex: 1, fontWeight: '500' }}>
-                      {items.filter(i => i.status === 'draft').length || dashboardStats.draftItems || 0} item(s) in Draft queue waiting for AI Workbench visual research ➔
+                      {items.filter(i => i.status === 'draft').length || dashboardStats.draftItems || 0} item(s) need inventory review ➔
                     </div>
                   </div>
 
@@ -2348,12 +2342,9 @@ export default function App() {
                   </div>
                 </div>
 
-                <div style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-start', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                   <button className="btn-outline" style={{ fontSize: '0.85rem' }} onClick={() => { setCurrentView('logs'); fetchAuditLogs(); }}>
                     📜 Open Full Audit & Activity Logs
-                  </button>
-                  <button className="btn-outline" style={{ fontSize: '0.8rem', color: '#d32f2f', borderColor: '#ffcdd2' }} onClick={handleClearInventory}>
-                    🗑️ Reset & Clear Inventory Database
                   </button>
                 </div>
               </div>
@@ -3938,8 +3929,31 @@ export default function App() {
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify(updatedFields)
                 });
-                if (!res.ok) throw new Error("Failed to save review fields");
+                if (!res.ok) {
+                  const data = await res.json().catch(() => ({}));
+                  throw new Error(data.error || "Failed to save review fields");
+                }
                 await fetchItems();
+              }}
+              onReleaseItem={handleReleaseItem}
+              onUnreleaseItem={handleUnreleaseItem}
+              onCropPhoto={(item, photo) => {
+                setAdminEditingItem(item);
+                const fullUrl = photo.photo_url || photo.url || photo.thumbnail_url;
+                setCropModalSrc(fullUrl);
+                setCropModalTarget({ type: 'edit_photo', photo });
+              }}
+              onRestorePhoto={async (item, photoId) => {
+                setAdminEditingItem(item);
+                await handleRestoreOriginalCrop(photoId);
+              }}
+              onSetPrimaryPhoto={async (item, photoId) => {
+                setAdminEditingItem(item);
+                await handleSetPrimaryPhoto(photoId);
+              }}
+              onDeletePhoto={async (item, photoId) => {
+                setAdminEditingItem(item);
+                await handleDeleteEditPhoto(photoId);
               }}
               onClose={() => setCurrentView('catalog')}
             />

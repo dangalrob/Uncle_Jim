@@ -230,11 +230,23 @@ async function initDatabase() {
         ['cat_3', 'estate_uncle_jim', 'Books & Documents', '📚'],
         ['cat_4', 'estate_uncle_jim', 'Artwork & Framed Prints', '🎨'],
         ['cat_5', 'estate_uncle_jim', 'Memorabilia & Keepsakes', '💎'],
-        ['cat_6', 'estate_uncle_jim', 'Household & Kitchenware', '🍽️']
+        ['cat_6', 'estate_uncle_jim', 'Household & Kitchenware', '🍽️'],
+        ['cat_packers', 'estate_uncle_jim', 'Packers', '🏈']
       ];
       for (const [id, eId, name, icon] of cats) {
         await dbRun(`INSERT INTO categories (id, estate_id, name, icon) VALUES (?, ?, ?, ?)`, [id, eId, name, icon]);
       }
+    }
+
+    // Ensure 'Packers' category exists in existing database
+    const packersCat = await dbGet(`SELECT id FROM categories WHERE name = 'Packers'`);
+    if (!packersCat) {
+      await dbRun(`INSERT INTO categories (id, estate_id, name, icon) VALUES (?, ?, ?, ?)`, [
+        'cat_packers',
+        'estate_uncle_jim',
+        'Packers',
+        '🏈'
+      ]);
     }
 
     // Seed Users
