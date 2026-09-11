@@ -65,6 +65,7 @@ export default function App() {
   const [editFormPhotos, setEditFormPhotos] = useState([]);
   const [editFormInstitutionalCandidate, setEditFormInstitutionalCandidate] = useState('None');
   const [editFormInstitutionalName, setEditFormInstitutionalName] = useState('');
+  const [editFormDestination, setEditFormDestination] = useState('undecided');
   const [isSavingItemEdits, setIsSavingItemEdits] = useState(false);
   const [isUploadingEditPhotos, setIsUploadingEditPhotos] = useState(false);
   const editPhotoInputRef = useRef(null);
@@ -1258,6 +1259,7 @@ export default function App() {
     setEditFormStory(item.story || item.story_text || '');
     setEditFormInstitutionalCandidate(item.institutional_candidate || item.institutionalCandidate || '');
     setEditFormInstitutionalName(item.institutional_name || item.institutionalName || '');
+    setEditFormDestination(item.destination || 'undecided');
     setEditFormPhotos(item.photos || (item.primary_photo ? [{ id: 'prim', photo_url: item.primary_photo, thumbnail_url: item.primary_thumb || item.primary_photo, is_primary: 1 }] : []));
 
     if (item.is_offline) {
@@ -1283,6 +1285,7 @@ export default function App() {
         setEditFormStory(story || '');
         setEditFormInstitutionalCandidate(fullItem.institutional_candidate || '');
         setEditFormInstitutionalName(fullItem.institutional_name || '');
+        setEditFormDestination(fullItem.destination || 'undecided');
         setEditFormPhotos(fullItem.photos || []);
       }
     } catch (err) {
@@ -1372,6 +1375,7 @@ export default function App() {
           dimensions: editFormDimensions,
           weight: editFormWeight,
           status: editFormStatus,
+          destination: editFormDestination || 'undecided',
           description: editFormDescription,
           notes: editFormDescription,
           story: editFormStory,
@@ -1398,6 +1402,7 @@ export default function App() {
         dimensions: editFormDimensions,
         weight: editFormWeight,
         status: editFormStatus,
+        destination: editFormDestination || 'undecided',
         description: editFormDescription,
         storyText: editFormStory,
         institutionalCandidate: editFormInstitutionalCandidate,
@@ -2914,9 +2919,9 @@ export default function App() {
 
 
                         {/* Institutional Candidate Badge */}
-                        {item.institutional_candidate && ['Maritime Museum', 'Library'].includes(item.institutional_candidate) && (
+                        {item.institutional_candidate && ['Maritime Museum', 'Library', 'TBD'].includes(item.institutional_candidate) && (
                           <div style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '2px 8px', borderRadius: '4px', marginTop: '4px' }}>
-                            🏛️ {item.institutional_candidate}
+                            🏛️ {item.institutional_candidate === 'TBD' ? 'Institutional: TBD' : item.institutional_candidate}
                           </div>
                         )}
 
@@ -3104,7 +3109,7 @@ export default function App() {
 
                     {/* Mockup 7: Who's Interested & Decision Panel */}
                     <div className="decision-panel">
-                      {currentReviewItem?.institutional_candidate && ['Maritime Museum', 'Library'].includes(currentReviewItem.institutional_candidate) && (
+                      {currentReviewItem?.institutional_candidate && ['Maritime Museum', 'Library', 'TBD'].includes(currentReviewItem.institutional_candidate) && (
                         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '4px 10px', borderRadius: '6px', marginBottom: '0.75rem' }}>
                           🏛️ Institutional Candidate: {currentReviewItem.institutional_candidate}
                         </div>
@@ -3538,9 +3543,9 @@ export default function App() {
                               </div>
 
                               {/* Institutional Candidate Tag */}
-                              {item.institutional_candidate && ['Maritime Museum', 'Library'].includes(item.institutional_candidate) && (
+                              {item.institutional_candidate && ['Maritime Museum', 'Library', 'TBD'].includes(item.institutional_candidate) && (
                                 <div style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '2px 8px', borderRadius: '4px', marginBottom: '4px' }}>
-                                  🏛️ {item.institutional_candidate}
+                                  🏛️ {item.institutional_candidate === 'TBD' ? 'Institutional: TBD' : item.institutional_candidate}
                                 </div>
                               )}
 
@@ -4518,6 +4523,22 @@ export default function App() {
                 </div>
 
                 <div className="form-field-group">
+                  <label className="form-field-label">Destination (Planning)</label>
+                  <select
+                    className="form-field-select"
+                    value={editFormDestination || 'undecided'}
+                    onChange={(e) => setEditFormDestination(e.target.value)}
+                  >
+                    <option value="undecided">Undecided</option>
+                    <option value="family">Family</option>
+                    <option value="institution">Institution</option>
+                    <option value="estate_sale">Estate Sale</option>
+                    <option value="friend">Friend</option>
+                    <option value="charity">Charity</option>
+                  </select>
+                </div>
+
+                <div className="form-field-group">
                   <label className="form-field-label">Institutional Candidate</label>
                   <select
                     className="form-field-select"
@@ -4525,6 +4546,7 @@ export default function App() {
                     onChange={(e) => setEditFormInstitutionalCandidate(e.target.value)}
                   >
                     <option value="">-- Select Candidate --</option>
+                    <option value="TBD">TBD</option>
                     <option value="No">No</option>
                     <option value="Maritime Museum">Maritime Museum</option>
                     <option value="Library">Library</option>

@@ -182,6 +182,7 @@ async function initDatabase() {
     db.run(`ALTER TABLE items ADD COLUMN institutional_name TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN client_id TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN era TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN destination TEXT DEFAULT 'undecided'`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN updated_at DATETIME`, () => {});
     db.run(`ALTER TABLE item_photos ADD COLUMN original_photo_url TEXT`, () => {});
     db.run(`ALTER TABLE item_photos ADD COLUMN updated_at DATETIME`, () => {});
@@ -233,18 +234,22 @@ async function initDatabase() {
         ['cat_6', 'estate_uncle_jim', 'Household & Kitchenware', '🍽️'],
         ['cat_packers', 'estate_uncle_jim', 'Packers', '🏈'],
         ['cat_guns', 'estate_uncle_jim', 'Guns', '🎯'],
-        ['cat_other', 'estate_uncle_jim', 'Other', '📦']
+        ['cat_other', 'estate_uncle_jim', 'Other', '📦'],
+        ['cat_electronics', 'estate_uncle_jim', 'Electronics', '⚡'],
+        ['cat_camera_video', 'estate_uncle_jim', 'Camera & Video Equipment', '📷']
       ];
       for (const [id, eId, name, icon] of cats) {
         await dbRun(`INSERT INTO categories (id, estate_id, name, icon) VALUES (?, ?, ?, ?)`, [id, eId, name, icon]);
       }
     }
 
-    // Ensure 'Packers', 'Guns', and 'Other' categories exist in existing database
+    // Ensure 'Packers', 'Guns', 'Other', 'Electronics', and 'Camera & Video Equipment' categories exist in existing database
     const extraCategories = [
       ['cat_packers', 'estate_uncle_jim', 'Packers', '🏈'],
       ['cat_guns', 'estate_uncle_jim', 'Guns', '🎯'],
-      ['cat_other', 'estate_uncle_jim', 'Other', '📦']
+      ['cat_other', 'estate_uncle_jim', 'Other', '📦'],
+      ['cat_electronics', 'estate_uncle_jim', 'Electronics', '⚡'],
+      ['cat_camera_video', 'estate_uncle_jim', 'Camera & Video Equipment', '📷']
     ];
     for (const [id, eId, name, icon] of extraCategories) {
       const existing = await dbGet(`SELECT id FROM categories WHERE name = ?`, [name]);
@@ -898,7 +903,7 @@ app.get('/api/items/:id', authenticateToken, async (req, res) => {
 
 app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor']), async (req, res) => {
   try {
-    const { title, era, categoryId, locationInHouse, location, condition, dimensions, weight, specialHandlingNotes, notes, description, storyText, provenanceSource, isHighValue, value, status, institutionalCandidate, institutional_candidate, institutionalName, institutional_name } = req.body;
+    const { title, era, categoryId, locationInHouse, location, condition, dimensions, weight, specialHandlingNotes, notes, description, storyText, provenanceSource, isHighValue, value, status, institutionalCandidate, institutional_candidate, institutionalName, institutional_name, destination } = req.body;
     const itemId = req.params.id;
     const finalLocation = locationInHouse !== undefined ? locationInHouse : location;
     const finalNotes = specialHandlingNotes !== undefined ? specialHandlingNotes : notes;
@@ -921,6 +926,7 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
           is_high_value = COALESCE(?, is_high_value),
           institutional_candidate = CASE WHEN ? = 1 THEN ? ELSE institutional_candidate END,
           institutional_name = CASE WHEN ? = 1 THEN ? ELSE institutional_name END,
+          destination = CASE WHEN ? = 1 THEN ? ELSE destination END,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND estate_id = ?
     `, [
@@ -940,6 +946,8 @@ app.put('/api/items/:id', authenticateToken, requireRole(['admin', 'contributor'
       finalInstCandidate !== undefined ? finalInstCandidate : null,
       finalInstName !== undefined ? 1 : 0,
       finalInstName !== undefined ? finalInstName : null,
+      destination !== undefined ? 1 : 0,
+      destination !== undefined ? destination : null,
       itemId,
       req.user.estate_id
     ]);

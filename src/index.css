@@ -1559,3 +1559,67 @@ body {
   transform: translateY(0);
 }
 
+/* Admin Inventory Review & Cleanup: Responsive Landscape & Portrait Layouts */
+.admin-review-table-view {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.admin-review-cards-view {
+  display: none;
+}
+
+/* Mobile Portrait: Use Adaptive Cards instead of cramped table */
+@media (max-width: 767px) and (orientation: portrait) {
+  .admin-review-table-view {
+    display: none !important;
+  }
+  .admin-review-cards-view {
+    display: flex !important;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Mobile Landscape: Optimized Compact Table with Touch-Friendly Controls */
+@media (orientation: landscape) and (max-height: 550px) {
+  .admin-review-table-view {
+    display: block !important;
+    overflow-x: auto !important;
+  }
+  .admin-review-cards-view {
+    display: none !important;
+  }
+  
+  .admin-review-table-view table {
+    min-width: 820px !important;
+    font-size: 0.82rem !important;
+  }
+
+  /* Touch targets minimum ~38px height in mobile landscape */
+  .review-table-row input,
+  .review-table-row select,
+  .review-table-row button {
+    min-height: 38px !important;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+    font-size: 0.84rem !important;
+    touch-action: manipulation;
+  }
+
+  .admin-review-table-view th {
+    padding: 6px 8px !important;
+    font-size: 0.78rem !important;
+  }
+
+  .admin-review-table-view td {
+    padding: 4px 6px !important;
+  }
+}
+
+

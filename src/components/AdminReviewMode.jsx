@@ -55,7 +55,8 @@ export default function AdminReviewMode({
   // Filtering & Sorting State
   const [searchQuery, setSearchQuery] = useState('');
   const [quickFilter, setQuickFilter] = useState('all'); // 'all' | 'missing_cat' | 'missing_val' | 'missing_title' | 'institutional' | 'not_released' | 'upload_pending'
-  const [sortField, setSortField] = useState('title'); // 'title' | 'category' | 'value' | 'status' | 'upload'
+  const [destinationFilter, setDestinationFilter] = useState('all'); // 'all' | 'undecided' | 'family' | 'institution' | 'estate_sale' | 'friend' | 'charity'
+  const [sortField, setSortField] = useState('title'); // 'title' | 'category' | 'value' | 'destination' | 'status' | 'upload'
   const [sortAsc, setSortAsc] = useState(true);
 
   // Row inline autosave state: { [itemId]: { status: 'saving'|'saved'|'error', errorMsg: '' } }
@@ -79,10 +80,18 @@ export default function AdminReviewMode({
     const missingCat = items.filter(i => !i.category_id && !i.category_name).length;
     const missingVal = items.filter(i => !i.value || i.value.trim() === '').length;
     const missingTitle = items.filter(i => !i.title || i.title.trim() === '' || i.title.toLowerCase() === 'untitled item').length;
-    const institutional = items.filter(i => ['Maritime Museum', 'Library'].includes(i.institutional_candidate || i.institutionalCandidate)).length;
+    const institutional = items.filter(i => ['Maritime Museum', 'Library', 'TBD'].includes(i.institutional_candidate || i.institutionalCandidate)).length;
     const notReleased = items.filter(i => i.status !== 'released').length;
     const uploadPending = items.filter(i => i.is_offline || i.sync_status === 'pending').length;
     
+    // Destination Planning counts
+    const destUndecided = items.filter(i => !i.destination || i.destination === 'undecided').length;
+    const destFamily = items.filter(i => i.destination === 'family').length;
+    const destInstitution = items.filter(i => i.destination === 'institution').length;
+    const destEstateSale = items.filter(i => i.destination === 'estate_sale').length;
+    const destFriend = items.filter(i => i.destination === 'friend').length;
+    const destCharity = items.filter(i => i.destination === 'charity').length;
+
     // "Need Attention" = items missing Category, Value, or Title
     const needAttention = items.filter(i => 
       (!i.category_id && !i.category_name) || 
@@ -91,7 +100,10 @@ export default function AdminReviewMode({
     ).length;
     const complete = Math.max(0, total - needAttention);
 
-    return { total, missingCat, missingVal, missingTitle, institutional, notReleased, uploadPending, needAttention, complete };
+    return { 
+      total, missingCat, missingVal, missingTitle, institutional, notReleased, uploadPending, needAttention, complete,
+      destUndecided, destFamily, destInstitution, destEstateSale, destFriend, destCharity
+    };
   }, [items]);
 
   // Filtered & Sorted items list
@@ -104,7 +116,14 @@ export default function AdminReviewMode({
         const descMatch = (item.description || item.notes || '').toLowerCase().includes(q);
         const locMatch = (item.location_in_house || item.location || '').toLowerCase().includes(q);
         const catMatch = (item.category_name || '').toLowerCase().includes(q);
-        if (!titleMatch && !descMatch && !locMatch && !catMatch) return false;
+        const destMatch = (item.destination || '').toLowerCase().includes(q);
+        if (!titleMatch && !descMatch && !locMatch && !catMatch && !destMatch) return false;
+      }
+
+      // Destination filter
+      if (destinationFilter !== 'all') {
+        const itemDest = item.destination || 'undecided';
+        if (itemDest !== destinationFilter) return false;
       }
 
       // Quick filter
@@ -116,7 +135,7 @@ export default function AdminReviewMode({
         case 'missing_title':
           return !item.title || item.title.trim() === '' || item.title.toLowerCase() === 'untitled item';
         case 'institutional':
-          return ['Maritime Museum', 'Library'].includes(item.institutional_candidate || item.institutionalCandidate);
+          return ['Maritime Museum', 'Library', 'TBD'].includes(item.institutional_candidate || item.institutionalCandidate);
         case 'not_released':
           return item.status !== 'released';
         case 'upload_pending':
@@ -143,6 +162,9 @@ export default function AdminReviewMode({
         const numA = parseFloat(valA) || 0;
         const numB = parseFloat(valB) || 0;
         return sortAsc ? numA - numB : numB - numA;
+      } else if (sortField === 'destination') {
+        valA = (a.destination || 'undecided').toLowerCase();
+        valB = (b.destination || 'undecided').toLowerCase();
       } else if (sortField === 'status') {
         valA = a.status === 'released' ? 'released' : 'draft';
         valB = b.status === 'released' ? 'released' : 'draft';
@@ -157,7 +179,7 @@ export default function AdminReviewMode({
     });
 
     return list;
-  }, [items, searchQuery, quickFilter, sortField, sortAsc, categories]);
+  }, [items, searchQuery, quickFilter, destinationFilter, sortField, sortAsc, categories]);
 
   // Current drill-down item
   const currentDrillDownItem = useMemo(() => {
@@ -186,6 +208,7 @@ export default function AdminReviewMode({
       // Map field names if necessary
       if (field === 'category_id') payload.categoryId = newValue;
       if (field === 'institutional_candidate') payload.institutionalCandidate = newValue;
+      if (field === 'destination') payload.destination = newValue;
 
       await onSaveItem(itemId, payload);
 
@@ -332,37 +355,73 @@ export default function AdminReviewMode({
             )}
           </div>
         </div>
+
+        {/* DESTINATION PLANNING SEGMENTED FILTER BAR */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', paddingTop: '0.4rem', borderTop: '1px solid #edf2f0' }}>
+          <span style={{ fontSize: '0.78rem', fontWeight: 'bold', color: 'var(--pine-primary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            🎯 Destination:
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+            {[
+              { id: 'all', label: 'All', count: stats.total },
+              { id: 'undecided', label: 'Undecided', count: stats.destUndecided },
+              { id: 'family', label: 'Family', count: stats.destFamily },
+              { id: 'institution', label: 'Institution', count: stats.destInstitution },
+              { id: 'estate_sale', label: 'Estate Sale', count: stats.destEstateSale },
+              { id: 'friend', label: 'Friend', count: stats.destFriend },
+              { id: 'charity', label: 'Charity', count: stats.destCharity }
+            ].map(pill => (
+              <button
+                key={pill.id}
+                className={`btn-outline ${destinationFilter === pill.id ? 'btn-green' : ''}`}
+                style={{
+                  fontSize: '0.78rem',
+                  padding: '0.22rem 0.65rem',
+                  borderRadius: '14px',
+                  fontWeight: destinationFilter === pill.id ? 'bold' : 'normal',
+                  cursor: 'pointer'
+                }}
+                onClick={() => setDestinationFilter(pill.id)}
+              >
+                {pill.label} ({pill.count})
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
-      {/* MAIN CONTENT: Compact Table Workspace */}
-      <div ref={tableContainerRef} style={{ flex: 1, overflowY: 'auto', background: '#fff' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.86rem', textAlign: 'left' }}>
+      {/* MAIN CONTENT: Dual View (Optimized Table for Laptop/Landscape + Adaptive Cards for Mobile Portrait) */}
+      <div className="admin-review-table-view" ref={tableContainerRef} style={{ flex: 1, overflowY: 'auto', overflowX: 'auto', background: '#fff' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.86rem', textAlign: 'left', minWidth: '880px' }}>
           <thead style={{ position: 'sticky', top: 0, background: '#f3f4f6', zIndex: 10, borderBottom: '2px solid #e5e7eb' }}>
             <tr>
               <th style={{ padding: '8px 10px', width: '56px', textAlign: 'center' }}>Photo</th>
-              <th style={{ padding: '8px 12px', cursor: 'pointer', minWidth: '220px' }} onClick={() => handleSort('title')}>
+              <th style={{ padding: '8px 12px', cursor: 'pointer', minWidth: '200px' }} onClick={() => handleSort('title')}>
                 Title {sortField === 'title' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 10px', cursor: 'pointer', minWidth: '180px' }} onClick={() => handleSort('category')}>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', minWidth: '170px' }} onClick={() => handleSort('category')}>
                 Category {sortField === 'category' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '140px' }} onClick={() => handleSort('value')}>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '130px' }} onClick={() => handleSort('value')}>
                 Estimated Value {sortField === 'value' && (sortAsc ? '▲' : '▼')}
               </th>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '135px' }} onClick={() => handleSort('destination')}>
+                Destination {sortField === 'destination' && (sortAsc ? '▲' : '▼')}
+              </th>
               <th style={{ padding: '8px 10px', width: '150px' }}>Institutional</th>
-              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '160px' }} onClick={() => handleSort('status')}>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '150px' }} onClick={() => handleSort('status')}>
                 Family Review {sortField === 'status' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '120px' }} onClick={() => handleSort('upload')}>
-                Upload Status {sortField === 'upload' && (sortAsc ? '▲' : '▼')}
+              <th style={{ padding: '8px 8px', cursor: 'pointer', width: '65px', textAlign: 'center' }} onClick={() => handleSort('upload')} title="Sync / Upload status">
+                Sync {sortField === 'upload' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 12px', width: '140px', textAlign: 'right' }}>Actions</th>
+              <th style={{ padding: '8px 12px', width: '125px', textAlign: 'right' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {filteredItems.length === 0 ? (
               <tr>
-                <td colSpan={8} style={{ padding: '3rem', textAlign: 'center', color: '#6b7280' }}>
+                <td colSpan={9} style={{ padding: '3rem', textAlign: 'center', color: '#6b7280' }}>
                   No inventory items match the current search or filter.
                 </td>
               </tr>
@@ -445,7 +504,7 @@ export default function AdminReviewMode({
                       </div>
                     </td>
 
-                    {/* Category (Inline Select with Packers) */}
+                    {/* Category (Inline Select with Icons) */}
                     <td style={{ padding: '6px 10px' }}>
                       <select
                         value={item.category_id || (item.category_name ? categories.find(c => c.name === item.category_name)?.id : '') || ''}
@@ -502,7 +561,32 @@ export default function AdminReviewMode({
                       )}
                     </td>
 
-                    {/* Institutional Candidate (Inline Select) */}
+                    {/* Destination Planning Field (Inline Select) */}
+                    <td style={{ padding: '6px 10px' }}>
+                      <select
+                        value={item.destination || 'undecided'}
+                        onChange={(e) => handleInlineSave(item, 'destination', e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '4px 6px',
+                          fontSize: '0.82rem',
+                          borderRadius: '4px',
+                          border: '1px solid #d1d5db',
+                          background: item.destination && item.destination !== 'undecided' ? '#f0fdf4' : '#fff',
+                          color: item.destination && item.destination !== 'undecided' ? '#166534' : '#374151',
+                          fontWeight: item.destination && item.destination !== 'undecided' ? '600' : 'normal'
+                        }}
+                      >
+                        <option value="undecided">Undecided</option>
+                        <option value="family">Family</option>
+                        <option value="institution">Institution</option>
+                        <option value="estate_sale">Estate Sale</option>
+                        <option value="friend">Friend</option>
+                        <option value="charity">Charity</option>
+                      </select>
+                    </td>
+
+                    {/* Institutional Candidate (Inline Select with TBD) */}
                     <td style={{ padding: '6px 10px' }}>
                       <select
                         value={instCandidate}
@@ -513,12 +597,13 @@ export default function AdminReviewMode({
                           fontSize: '0.82rem',
                           borderRadius: '4px',
                           border: '1px solid #d1d5db',
-                          background: ['Maritime Museum', 'Library'].includes(instCandidate) ? '#f0fdf4' : '#fff',
-                          color: ['Maritime Museum', 'Library'].includes(instCandidate) ? '#15803d' : '#4b5563',
-                          fontWeight: ['Maritime Museum', 'Library'].includes(instCandidate) ? 'bold' : 'normal'
+                          background: ['Maritime Museum', 'Library', 'TBD'].includes(instCandidate) ? '#f0fdf4' : '#fff',
+                          color: ['Maritime Museum', 'Library', 'TBD'].includes(instCandidate) ? '#15803d' : '#4b5563',
+                          fontWeight: ['Maritime Museum', 'Library', 'TBD'].includes(instCandidate) ? 'bold' : 'normal'
                         }}
                       >
-                        <option value="">-- Select Candidate --</option>
+                        <option value="">-- Candidate --</option>
+                        <option value="TBD">TBD</option>
                         <option value="No">No</option>
                         <option value="Maritime Museum">Maritime Museum</option>
                         <option value="Library">Library</option>
@@ -575,15 +660,15 @@ export default function AdminReviewMode({
                       </div>
                     </td>
 
-                    {/* Upload Status */}
-                    <td style={{ padding: '6px 10px' }}>
+                    {/* Upload / Sync Status (Compact) */}
+                    <td style={{ padding: '6px 8px', textAlign: 'center' }}>
                       {isPendingUpload ? (
-                        <span style={{ fontSize: '0.74rem', fontWeight: 'bold', color: '#c2410c', background: '#ffedd5', padding: '3px 7px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                          ⏳ Pending
+                        <span style={{ fontSize: '0.74rem', fontWeight: 'bold', color: '#c2410c', background: '#ffedd5', padding: '2px 6px', borderRadius: '4px' }} title="Pending upload / offline">
+                          ⏳
                         </span>
                       ) : (
-                        <span style={{ fontSize: '0.74rem', color: '#4b5563', background: '#f3f4f6', padding: '3px 7px', borderRadius: '4px' }}>
-                          ✓ Uploaded
+                        <span style={{ fontSize: '0.74rem', color: '#15803d', background: '#f0fdf4', padding: '2px 6px', borderRadius: '4px' }} title="Uploaded & synced">
+                          ✓
                         </span>
                       )}
                     </td>
@@ -636,6 +721,212 @@ export default function AdminReviewMode({
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* MOBILE PORTRAIT CARDS WORKSPACE (Visible on mobile portrait screens) */}
+      <div className="admin-review-cards-view" style={{ flex: 1, overflowY: 'auto', background: '#f8faf9', padding: '0.75rem' }}>
+        {filteredItems.length === 0 ? (
+          <div style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
+            No inventory items match the current search or filter.
+          </div>
+        ) : (
+          filteredItems.map((item) => {
+            const isTitleMissing = !item.title || item.title.trim() === '' || item.title.toLowerCase() === 'untitled item';
+            const isCatMissing = !item.category_id && !item.category_name;
+            const isValMissing = !item.value || item.value.trim() === '';
+            const isReleased = item.status === 'released';
+            const rowState = rowSaveStates[item.id];
+            const instCandidate = item.institutional_candidate || item.institutionalCandidate || '';
+
+            return (
+              <div
+                key={`card-${item.id}`}
+                className="admin-review-mobile-card"
+                style={{
+                  background: '#fff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '10px',
+                  padding: '0.85rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.65rem',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+                }}
+              >
+                {/* Header row: thumbnail, title, autosave indicator */}
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                  <div
+                    style={{
+                      width: '56px',
+                      height: '56px',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      border: '1px solid #e5e7eb',
+                      cursor: 'pointer',
+                      flexShrink: 0
+                    }}
+                    onClick={() => {
+                      const primaryPhoto = (item.photos && item.photos[0]) || { photo_url: item.primary_photo, thumbnail_url: item.primary_thumb };
+                      setActivePhotoTools({ item, photo: primaryPhoto });
+                    }}
+                    title="Click for photo tools"
+                  >
+                    <CachedThumbnail
+                      url={item.primary_thumb || item.primary_photo}
+                      version={item.primary_thumb_version}
+                      alt={item.title}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                  </div>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <input
+                      type="text"
+                      defaultValue={item.title || ''}
+                      key={`m-title-${item.id}-${item.title}`}
+                      placeholder="⚠️ Enter Title"
+                      onBlur={(e) => handleInlineSave(item, 'title', e.target.value.trim())}
+                      style={{
+                        width: '100%',
+                        padding: '6px 8px',
+                        fontSize: '0.92rem',
+                        fontWeight: 'bold',
+                        borderRadius: '6px',
+                        border: isTitleMissing ? '1px solid #f59e0b' : '1px solid #d1d5db',
+                        background: isTitleMissing ? '#fffbeb' : '#fff'
+                      }}
+                    />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '4px' }}>
+                      {rowState?.status === 'saving' && <span style={{ fontSize: '0.72rem', color: 'var(--pine-primary)', fontWeight: 'bold' }}>Saving…</span>}
+                      {rowState?.status === 'saved' && <span style={{ fontSize: '0.72rem', color: '#15803d', fontWeight: 'bold' }}>✓ Saved</span>}
+                      {rowState?.status === 'error' && <span style={{ fontSize: '0.72rem', color: '#b91c1c', fontWeight: 'bold' }}>⚠️ Save error</span>}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Category & Value */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '0.5rem' }}>
+                  <div>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#6b7280', display: 'block', marginBottom: '2px' }}>Category</label>
+                    <select
+                      value={item.category_id || (item.category_name ? categories.find(c => c.name === item.category_name)?.id : '') || ''}
+                      onChange={(e) => handleInlineSave(item, 'category_id', e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '6px',
+                        fontSize: '0.84rem',
+                        borderRadius: '6px',
+                        border: isCatMissing ? '1px solid #f59e0b' : '1px solid #d1d5db',
+                        background: isCatMissing ? '#fffbeb' : '#fff'
+                      }}
+                    >
+                      <option value="">⚠️ Select Category</option>
+                      {categories.map(c => (
+                        <option key={c.id} value={c.id}>{c.icon || '📦'} {c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#6b7280', display: 'block', marginBottom: '2px' }}>Value</label>
+                    <input
+                      type="text"
+                      defaultValue={item.value || ''}
+                      key={`m-val-${item.id}-${item.value}`}
+                      placeholder="⚠️ $0"
+                      onBlur={(e) => handleInlineSave(item, 'value', e.target.value.trim())}
+                      style={{
+                        width: '100%',
+                        padding: '6px',
+                        fontSize: '0.84rem',
+                        borderRadius: '6px',
+                        border: isValMissing ? '1px solid #f59e0b' : '1px solid #d1d5db',
+                        background: isValMissing ? '#fffbeb' : '#fff',
+                        fontWeight: '600'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Destination & Institutional Candidate */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                  <div>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#6b7280', display: 'block', marginBottom: '2px' }}>Destination</label>
+                    <select
+                      value={item.destination || 'undecided'}
+                      onChange={(e) => handleInlineSave(item, 'destination', e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '6px',
+                        fontSize: '0.82rem',
+                        borderRadius: '6px',
+                        border: '1px solid #d1d5db',
+                        background: item.destination && item.destination !== 'undecided' ? '#f0fdf4' : '#fff',
+                        color: item.destination && item.destination !== 'undecided' ? '#166534' : '#374151'
+                      }}
+                    >
+                      <option value="undecided">Undecided</option>
+                      <option value="family">Family</option>
+                      <option value="institution">Institution</option>
+                      <option value="estate_sale">Estate Sale</option>
+                      <option value="friend">Friend</option>
+                      <option value="charity">Charity</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#6b7280', display: 'block', marginBottom: '2px' }}>Institutional</label>
+                    <select
+                      value={instCandidate}
+                      onChange={(e) => handleInlineSave(item, 'institutional_candidate', e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '6px',
+                        fontSize: '0.82rem',
+                        borderRadius: '6px',
+                        border: '1px solid #d1d5db',
+                        background: ['Maritime Museum', 'Library', 'TBD'].includes(instCandidate) ? '#f0fdf4' : '#fff'
+                      }}
+                    >
+                      <option value="">-- Candidate --</option>
+                      <option value="TBD">TBD</option>
+                      <option value="No">No</option>
+                      <option value="Maritime Museum">Maritime Museum</option>
+                      <option value="Library">Library</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Footer row: Release toggle & Edit Details */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '0.35rem', borderTop: '1px solid #f3f4f6' }}>
+                  <div>
+                    {isReleased ? (
+                      <button
+                        onClick={() => onUnreleaseItem(item.id)}
+                        style={{ fontSize: '0.74rem', color: '#b91c1c', border: '1px solid #fca5a5', background: '#fff', borderRadius: '5px', padding: '4px 8px', cursor: 'pointer' }}
+                      >
+                        ✓ Released (Unrelease)
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => onReleaseItem(item.id)}
+                        style={{ fontSize: '0.74rem', color: '#15803d', border: '1px solid #86efac', background: '#f0fdf4', borderRadius: '5px', padding: '4px 10px', fontWeight: 'bold', cursor: 'pointer' }}
+                      >
+                        🚀 Release
+                      </button>
+                    )}
+                  </div>
+
+                  <button
+                    className="btn-outline"
+                    onClick={() => setDrillDownItemId(item.id)}
+                    style={{ fontSize: '0.8rem', padding: '5px 10px', borderRadius: '6px', fontWeight: 'bold' }}
+                  >
+                    Edit Details ➔
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
 
       {/* DRILL DOWN / EDIT DETAILS MODAL (Preserves current filtered context) */}
@@ -861,6 +1152,7 @@ function DrillDownModal({
     title: '',
     categoryId: '',
     value: '',
+    destination: 'undecided',
     era: '',
     locationInHouse: '',
     condition: '',
@@ -885,6 +1177,7 @@ function DrillDownModal({
         title: item.title || '',
         categoryId: item.category_id || (item.category_name ? categories.find(c => c.name === item.category_name)?.id : '') || '',
         value: item.value || '',
+        destination: item.destination || 'undecided',
         era: item.era || '',
         locationInHouse: item.location_in_house || item.location || '',
         condition: item.condition || '',
@@ -1160,7 +1453,26 @@ function DrillDownModal({
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.2fr', gap: '0.85rem' }}>
+              {/* Destination Planning Field */}
+              <div style={{ padding: '0.65rem', background: '#f8faf9', borderRadius: '6px', border: '1px solid #e5e7eb' }}>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', marginBottom: '4px' }}>
+                  🎯 Destination (Planning)
+                </label>
+                <select
+                  value={formData.destination || 'undecided'}
+                  onChange={(e) => handleChange('destination', e.target.value)}
+                  style={{ width: '100%', padding: '0.4rem', fontSize: '0.82rem', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff' }}
+                >
+                  <option value="undecided">Undecided</option>
+                  <option value="family">Family</option>
+                  <option value="institution">Institution</option>
+                  <option value="estate_sale">Estate Sale</option>
+                  <option value="friend">Friend</option>
+                  <option value="charity">Charity</option>
+                </select>
+              </div>
+
               {/* Institutional Candidate */}
               <div style={{ padding: '0.65rem', background: '#f8faf9', borderRadius: '6px', border: '1px solid #e5e7eb' }}>
                 <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', marginBottom: '4px' }}>
@@ -1172,6 +1484,7 @@ function DrillDownModal({
                   style={{ width: '100%', padding: '0.4rem', fontSize: '0.82rem', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff' }}
                 >
                   <option value="">-- Select Candidate --</option>
+                  <option value="TBD">TBD</option>
                   <option value="No">No</option>
                   <option value="Maritime Museum">Maritime Museum</option>
                   <option value="Library">Library</option>
@@ -1181,9 +1494,9 @@ function DrillDownModal({
               {/* Family Release Status */}
               <div style={{ padding: '0.65rem', background: '#f8faf9', borderRadius: '6px', border: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
-                  <div style={{ fontSize: '0.78rem', fontWeight: 'bold' }}>Family Catalog Release</div>
+                  <div style={{ fontSize: '0.78rem', fontWeight: 'bold' }}>Family Release</div>
                   <div style={{ fontSize: '0.72rem', color: '#6b7280' }}>
-                    {formData.status === 'released' ? 'Visible to family members' : 'Draft only (hidden from family)'}
+                    {formData.status === 'released' ? 'Visible to family' : 'Draft only (hidden)'}
                   </div>
                 </div>
                 {formData.status === 'released' ? (
@@ -1206,7 +1519,7 @@ function DrillDownModal({
                     }}
                     style={{ fontSize: '0.78rem', padding: '0.35rem 0.75rem', fontWeight: 'bold' }}
                   >
-                    🚀 Release for Review
+                    🚀 Release
                   </button>
                 )}
               </div>
@@ -1378,13 +1691,14 @@ function DrillDownModal({
               value={formData.description}
               onChange={(e) => handleChange('description', e.target.value)}
               placeholder="Verified item description, history, markings, and condition notes..."
-              rows={12}
+              rows={16}
               style={{
                 width: '100%',
-                minHeight: '240px',
-                padding: '0.75rem',
-                fontSize: '0.92rem',
-                lineHeight: '1.5',
+                minHeight: '360px',
+                maxHeight: '650px',
+                padding: '0.85rem',
+                fontSize: '0.94rem',
+                lineHeight: '1.6',
                 borderRadius: '6px',
                 border: '1px solid #d1d5db',
                 fontFamily: 'inherit',
