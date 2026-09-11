@@ -335,6 +335,33 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+.user-dropdown-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  min-height: 44px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: var(--pine-deep);
+  font-size: 0.9rem;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.user-dropdown-action-btn:hover,
+.user-dropdown-action-btn:active {
+  background: #edf2f7;
+  color: var(--pine-primary);
+  border-color: #cbd5e1;
+}
+
 .user-dropdown-logout-btn:hover,
 .user-dropdown-logout-btn:active {
   background: #fed7d7;

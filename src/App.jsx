@@ -6,7 +6,7 @@ import {
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
   Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff,
   Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign, Crop,
-  LogOut, Activity
+  LogOut, Activity, MessageSquare, MessageCircle, Key
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import { thumbnailCache } from './services/thumbnailCache';
@@ -123,11 +123,15 @@ export default function App() {
     setDetailItem(null);
     setAdminReviewItemId(null);
     if (currentUser?.role === 'admin') {
-      setCurrentView('dashboard');
+      if (adminViewMode === 'user') {
+        setCurrentView('catalog');
+      } else {
+        setCurrentView('dashboard');
+      }
     } else if (currentUser?.role === 'institution') {
       setCurrentView('institution');
     } else {
-      setCurrentView('review');
+      setCurrentView('catalog');
     }
   };
 
@@ -153,6 +157,48 @@ export default function App() {
   const [reauthPassword, setReauthPassword] = useState('');
   const [isReauthenticating, setIsReauthenticating] = useState(false);
   const [myInterests, setMyInterests] = useState([]);
+  
+  // Admin View Mode: 'admin' (Admin Dashboard & controls) vs 'user' (Regular User Experience)
+  const [adminViewMode, setAdminViewMode] = useState(() => {
+    return localStorage.getItem('uj_admin_view_mode') || 'admin';
+  });
+  const [showAdminChoiceModal, setShowAdminChoiceModal] = useState(false);
+  const [familyMembers, setFamilyMembers] = useState([]);
+  const [selectedFamilyMemberId, setSelectedFamilyMemberId] = useState('');
+
+  // Item Detail Stories and Questions state
+  const [itemDetailStories, setItemDetailStories] = useState([]);
+  const [itemDetailQuestions, setItemDetailQuestions] = useState([]);
+  const [newStoryText, setNewStoryText] = useState('');
+  const [newQuestionText, setNewQuestionText] = useState('');
+  const [isSubmittingStory, setIsSubmittingStory] = useState(false);
+  const [isSubmittingQuestion, setIsSubmittingQuestion] = useState(false);
+
+  // Admin Questions & Stories views state
+  const [adminQuestions, setAdminQuestions] = useState([]);
+  const [adminQuestionsFilter, setAdminQuestionsFilter] = useState('all'); // 'all' | 'unanswered' | 'answered'
+  const [adminAnsweringQuestionId, setAdminAnsweringQuestionId] = useState(null);
+  const [adminAnswerText, setAdminAnswerText] = useState('');
+  const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false);
+  const [adminStories, setAdminStories] = useState([]);
+  const [isLoadingAdminQA, setIsLoadingAdminQA] = useState(false);
+
+  // Password Management State
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [changePasswordSuccess, setChangePasswordSuccess] = useState(null);
+  const [changePasswordError, setChangePasswordError] = useState(null);
+
+  // Admin User Management & Password Reset State
+  const [adminUsersList, setAdminUsersList] = useState([]);
+  const [isLoadingAdminUsers, setIsLoadingAdminUsers] = useState(false);
+  const [userToResetPassword, setUserToResetPassword] = useState(null); // target user object
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
+  const [resetPasswordSuccess, setResetPasswordSuccess] = useState(null);
+  const [resetPasswordError, setResetPasswordError] = useState(null);
   
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -326,6 +372,23 @@ export default function App() {
     return token ? { 'Authorization': `Bearer ${token}` } : {};
   };
 
+  const fetchFamilyMembers = async () => {
+    try {
+      const res = await fetch('/api/auth/family-members');
+      if (res.ok) {
+        const data = await res.json();
+        setFamilyMembers(data.members || []);
+        if (data.members && data.members.length > 0 && !selectedFamilyMemberId) {
+          // Pre-select first family member
+          setSelectedFamilyMemberId(data.members[0].id);
+          setLoginEmail(data.members[0].email);
+        }
+      }
+    } catch (err) {
+      console.warn("Could not load family members list:", err);
+    }
+  };
+
   const checkAuth = async () => {
     try {
       const res = await fetch('/api/auth/me', {
@@ -337,10 +400,17 @@ export default function App() {
         setCurrentUser(data.user);
         localStorage.setItem('uj_user', JSON.stringify(data.user));
         setNeedsReauth(false);
-        setCurrentView(prev => (prev === 'login' ? (data.user.role === 'admin' ? 'dashboard' : 'review') : prev));
+        const storedAdminView = localStorage.getItem('uj_admin_view_mode') || 'admin';
+        setAdminViewMode(storedAdminView);
+        if (data.user.role === 'admin') {
+          setCurrentView(storedAdminView === 'user' ? 'catalog' : 'dashboard');
+        } else {
+          setCurrentView('catalog');
+        }
       } else {
         localStorage.removeItem('uj_user');
         localStorage.removeItem('uj_token');
+        fetchFamilyMembers();
         setCurrentView('login');
       }
     } catch (err) {
@@ -349,10 +419,17 @@ export default function App() {
         try {
           const user = JSON.parse(cachedUser);
           setCurrentUser(user);
-          setCurrentView(prev => (prev === 'login' ? (user.role === 'admin' ? 'dashboard' : 'review') : prev));
+          const storedAdminView = localStorage.getItem('uj_admin_view_mode') || 'admin';
+          setAdminViewMode(storedAdminView);
+          if (user.role === 'admin') {
+            setCurrentView(storedAdminView === 'user' ? 'catalog' : 'dashboard');
+          } else {
+            setCurrentView('catalog');
+          }
           return;
         } catch (e) {}
       }
+      fetchFamilyMembers();
       setCurrentView('login');
     }
   };
@@ -373,13 +450,40 @@ export default function App() {
           localStorage.setItem('uj_token', data.token);
         }
         setNeedsReauth(false);
-        if (data.user.role === 'admin') setCurrentView('dashboard');
-        else setCurrentView('review');
+
+        if (data.user.role === 'admin') {
+          // Present Admin Choice Modal
+          setShowAdminChoiceModal(true);
+        } else {
+          setCurrentView('catalog');
+        }
       } else {
-        alert(data.error || "Login failed");
+        alert(data.error || "Login failed. Please check your credentials.");
       }
     } catch (err) {
       alert("Network error during login");
+    }
+  };
+
+  const handleChooseAdminMode = (mode) => {
+    setAdminViewMode(mode);
+    localStorage.setItem('uj_admin_view_mode', mode);
+    setShowAdminChoiceModal(false);
+    if (mode === 'user') {
+      setCurrentView('catalog');
+    } else {
+      setCurrentView('dashboard');
+    }
+  };
+
+  const handleToggleAdminView = () => {
+    const nextMode = adminViewMode === 'admin' ? 'user' : 'admin';
+    setAdminViewMode(nextMode);
+    localStorage.setItem('uj_admin_view_mode', nextMode);
+    if (nextMode === 'user') {
+      setCurrentView('catalog');
+    } else {
+      setCurrentView('dashboard');
     }
   };
 
@@ -509,6 +613,108 @@ export default function App() {
       if (res.ok) setUsersList(await res.json());
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const fetchAdminUsers = async () => {
+    setIsLoadingAdminUsers(true);
+    try {
+      const res = await fetch('/api/admin/users');
+      if (res.ok) {
+        const data = await res.json();
+        setAdminUsersList(data.users || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch admin users:", err);
+    } finally {
+      setIsLoadingAdminUsers(false);
+    }
+  };
+
+  const handleChangePassword = async (e) => {
+    if (e) e.preventDefault();
+    setChangePasswordError(null);
+    setChangePasswordSuccess(null);
+
+    if (!currentPasswordInput) {
+      setChangePasswordError("Please enter your current password.");
+      return;
+    }
+    if (!newPasswordInput) {
+      setChangePasswordError("Please enter a new password.");
+      return;
+    }
+    if (newPasswordInput !== confirmPasswordInput) {
+      setChangePasswordError("New password and confirmation do not match.");
+      return;
+    }
+    if (newPasswordInput.length < 4) {
+      setChangePasswordError("New password must be at least 4 characters.");
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentPassword: currentPasswordInput,
+          newPassword: newPasswordInput,
+          confirmPassword: confirmPasswordInput
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        setChangePasswordSuccess(data.message || "Your password was changed successfully!");
+        setCurrentPasswordInput('');
+        setNewPasswordInput('');
+        setConfirmPasswordInput('');
+        // Auto close after 2 seconds
+        setTimeout(() => {
+          setShowChangePasswordModal(false);
+          setChangePasswordSuccess(null);
+        }, 2000);
+      } else {
+        setChangePasswordError(data.error || "Failed to change password.");
+      }
+    } catch (err) {
+      console.error("Password change network error:", err);
+      setChangePasswordError("Network error. Please try again.");
+    } finally {
+      setIsChangingPassword(false);
+    }
+  };
+
+  const handleResetUserPassword = async () => {
+    if (!userToResetPassword) return;
+    setIsResettingPassword(true);
+    setResetPasswordError(null);
+    setResetPasswordSuccess(null);
+
+    try {
+      const res = await fetch(`/api/admin/users/${userToResetPassword.id}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        setResetPasswordSuccess(data.message || `Password for ${userToResetPassword.name} has been reset to default.`);
+        setTimeout(() => {
+          setUserToResetPassword(null);
+          setResetPasswordSuccess(null);
+          fetchAdminUsers();
+        }, 1800);
+      } else {
+        setResetPasswordError(data.error || "Failed to reset password.");
+      }
+    } catch (err) {
+      console.error("Reset password network error:", err);
+      setResetPasswordError("Network error. Please try again.");
+    } finally {
+      setIsResettingPassword(false);
     }
   };
 
@@ -1802,6 +2008,136 @@ export default function App() {
     }
   };
 
+  const fetchItemDetailExtras = async (itemId) => {
+    try {
+      const res = await fetch(`/api/items/${itemId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setItemDetailStories(data.stories || []);
+        setItemDetailQuestions(data.questions || []);
+      }
+    } catch (err) {
+      console.warn("Could not load item stories/questions:", err);
+    }
+  };
+
+  const handleOpenItemDetail = async (item) => {
+    setSelectedItem(item);
+    const idx = items.findIndex(i => i.id === item.id);
+    if (idx !== -1) setReviewIndex(idx);
+    setActiveReviewPhotoIdx(0);
+    setItemDetailStories([]);
+    setItemDetailQuestions([]);
+    setNewStoryText('');
+    setNewQuestionText('');
+    setCurrentView('review');
+    await fetchItemDetailExtras(item.id);
+  };
+
+  const handleSubmitStory = async (itemId) => {
+    if (!newStoryText.trim()) return;
+    setIsSubmittingStory(true);
+    try {
+      const res = await fetch(`/api/items/${itemId}/stories`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storyText: newStoryText.trim() })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setItemDetailStories(data.stories || []);
+        setNewStoryText('');
+        alert("✨ Thank you! Your story/memory has been saved.");
+      } else {
+        alert("Failed to submit story. Please try again.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error submitting story.");
+    } finally {
+      setIsSubmittingStory(false);
+    }
+  };
+
+  const handleSubmitQuestion = async (itemId) => {
+    if (!newQuestionText.trim()) return;
+    setIsSubmittingQuestion(true);
+    try {
+      const res = await fetch(`/api/items/${itemId}/questions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: newQuestionText.trim() })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setItemDetailQuestions(data.questions || []);
+        setNewQuestionText('');
+        alert("❓ Your question has been submitted to the Admin.");
+      } else {
+        alert("Failed to submit question. Please try again.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Network error submitting question.");
+    } finally {
+      setIsSubmittingQuestion(false);
+    }
+  };
+
+  const fetchAdminQuestions = async (filter = adminQuestionsFilter) => {
+    setIsLoadingAdminQA(true);
+    try {
+      const res = await fetch(`/api/admin/questions?status=${filter}`);
+      if (res.ok) {
+        const data = await res.json();
+        setAdminQuestions(data.questions || []);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoadingAdminQA(false);
+    }
+  };
+
+  const handleAnswerQuestion = async (questionId) => {
+    if (!adminAnswerText.trim()) return;
+    setIsSubmittingAnswer(true);
+    try {
+      const res = await fetch(`/api/admin/questions/${questionId}/answer`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answer: adminAnswerText.trim() })
+      });
+      if (res.ok) {
+        setAdminAnsweringQuestionId(null);
+        setAdminAnswerText('');
+        await fetchAdminQuestions(adminQuestionsFilter);
+      } else {
+        alert("Failed to save answer.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error answering question.");
+    } finally {
+      setIsSubmittingAnswer(false);
+    }
+  };
+
+  const fetchAdminStories = async () => {
+    setIsLoadingAdminQA(true);
+    try {
+      const res = await fetch('/api/admin/stories');
+      if (res.ok) {
+        const data = await res.json();
+        setAdminStories(data.stories || []);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoadingAdminQA(false);
+    }
+  };
+
   const fetchMyInterests = async () => {
     try {
       const res = await fetch('/api/reports/my-interests');
@@ -1850,84 +2186,103 @@ export default function App() {
           </div>
 
           <div className="sidebar-menu">
-            {/* UNIVERSAL HOME / MAIN MENU BUTTON FOR ALL ROLES */}
-            <button
-              className={`sidebar-item ${['dashboard', 'review'].includes(currentView) ? 'active' : ''}`}
-              onClick={handleNavigateHome}
-            >
-              <LayoutDashboard size={18} /> 🏠 Main Dashboard
-            </button>
+            {/* When Admin is in Admin View Mode */}
+            {currentUser?.role === 'admin' && adminViewMode === 'admin' && (
+              <>
+                <button
+                  className={`sidebar-item ${currentView === 'dashboard' ? 'active' : ''}`}
+                  onClick={handleNavigateHome}
+                >
+                  <LayoutDashboard size={18} /> 🏠 Main Dashboard
+                </button>
 
-            {currentUser?.role === 'admin' && (
-              <button className={`sidebar-item ${currentView === 'admin_review' ? 'active' : ''}`} onClick={() => { setAdminReviewItemId(null); setCurrentView('admin_review'); setMobileNavOpen(false); }}>
-                <CheckSquare size={18} /> Admin Review Mode
-              </button>
+                <button className={`sidebar-item ${currentView === 'admin_review' ? 'active' : ''}`} onClick={() => { setAdminReviewItemId(null); setCurrentView('admin_review'); setMobileNavOpen(false); }}>
+                  <CheckSquare size={18} /> Admin Review Mode
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'catalog' ? 'active' : ''}`} onClick={() => { setCurrentView('catalog'); setMobileNavOpen(false); }}>
+                  <Package size={18} /> Browse Inventory Catalog
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'admin_questions' ? 'active' : ''}`} onClick={() => { setCurrentView('admin_questions'); fetchAdminQuestions('all'); setMobileNavOpen(false); }}>
+                  <HelpCircle size={18} /> Family Questions
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'admin_stories' ? 'active' : ''}`} onClick={() => { setCurrentView('admin_stories'); fetchAdminStories(); setMobileNavOpen(false); }}>
+                  <MessageSquare size={18} /> Family Stories
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'capture' ? 'active' : ''}`} onClick={handleOpenCapture}>
+                  <PlusCircle size={18} /> Add Item (Camera)
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'assignments' ? 'active' : ''}`} onClick={() => { setCurrentView('assignments'); setMobileNavOpen(false); }}>
+                  <UserCheck size={18} /> Assignments
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'distribution' ? 'active' : ''}`} onClick={() => { setCurrentView('distribution'); setMobileNavOpen(false); }}>
+                  <Truck size={18} /> Distribution
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'draft_mode' ? 'active' : ''}`} onClick={() => { setCurrentView('draft_mode'); fetchDraftData(); setMobileNavOpen(false); }}>
+                  <Layers size={18} /> Family Draft
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'email_preview' ? 'active' : ''}`} onClick={() => { setCurrentView('email_preview'); setMobileNavOpen(false); }}>
+                  <Mail size={18} /> Email Catalog Report
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'users' ? 'active' : ''}`} onClick={() => { setCurrentView('users'); fetchAdminUsers(); setMobileNavOpen(false); }}>
+                  <Users size={18} /> Family Users
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'logs' ? 'active' : ''}`} onClick={() => { setCurrentView('logs'); fetchAuditLogs(); setMobileNavOpen(false); }}>
+                  <History size={18} /> Logs
+                </button>
+
+                <button className="sidebar-item" onClick={() => { setShowDiagnosticsModal(true); setMobileNavOpen(false); }}>
+                  <Activity size={18} /> 🔍 Offline Diagnostics ({stagedItems.length})
+                </button>
+              </>
             )}
 
-            {(currentUser?.role === 'admin' || currentUser?.role === 'reviewer' || currentUser?.role === 'contributor') && (
-              <button className={`sidebar-item ${currentView === 'catalog' ? 'active' : ''}`} onClick={() => { setCurrentView('catalog'); setMobileNavOpen(false); }}>
-                <Package size={18} /> Inventory Catalog
-              </button>
-            )}
+            {/* When Regular User OR Admin in User View Mode */}
+            {(currentUser?.role !== 'admin' || adminViewMode === 'user') && (
+              <>
+                <button
+                  className={`sidebar-item ${currentView === 'catalog' && catalogInterestFilter !== 'my_interests' ? 'active' : ''}`}
+                  onClick={() => {
+                    setCatalogInterestFilter('all');
+                    setCurrentView('catalog');
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  <Package size={18} /> Browse Released Items
+                </button>
 
-            {(currentUser?.role === 'admin' || currentUser?.role === 'contributor') && (
-              <button className={`sidebar-item ${currentView === 'capture' ? 'active' : ''}`} onClick={handleOpenCapture}>
-                <PlusCircle size={18} /> Add Item (Camera)
-              </button>
-            )}
+                <button
+                  className={`sidebar-item ${currentView === 'my_interests' || (currentView === 'catalog' && catalogInterestFilter === 'my_interests') ? 'active' : ''}`}
+                  onClick={() => {
+                    setCurrentView('my_interests');
+                    fetchMyInterests();
+                    setMobileNavOpen(false);
+                  }}
+                >
+                  <Star size={18} color="#f59e0b" fill="#f59e0b" /> My Interested Items
+                </button>
 
-            {(currentUser?.role === 'admin' || currentUser?.role === 'reviewer') && (
-              <button className={`sidebar-item ${currentView === 'review' ? 'active' : ''}`} onClick={() => { setCurrentView('review'); setDecisionRecorded(false); setMobileNavOpen(false); }}>
-                <BookOpen size={18} /> Family Review (1-by-1)
-              </button>
-            )}
+                {currentUser?.role === 'contributor' && (
+                  <button className={`sidebar-item ${currentView === 'capture' ? 'active' : ''}`} onClick={handleOpenCapture}>
+                    <PlusCircle size={18} /> Add Item (Camera)
+                  </button>
+                )}
 
-            {currentUser?.role === 'reviewer' && (
-              <button className={`sidebar-item ${currentView === 'my_interests' ? 'active' : ''}`} onClick={() => { setCurrentView('my_interests'); fetchMyInterests(); setMobileNavOpen(false); }}>
-                <Heart size={18} /> My Interested Items
-              </button>
-            )}
-
-            {(currentUser?.role === 'admin' || currentUser?.role === 'institution') && (
-              <button className={`sidebar-item ${currentView === 'institution' ? 'active' : ''}`} onClick={() => { setCurrentView('institution'); setMobileNavOpen(false); }}>
-                <Building2 size={18} /> Institution Portal
-              </button>
-            )}
-
-            {currentUser?.role === 'admin' && (
-              <button className={`sidebar-item ${currentView === 'assignments' ? 'active' : ''}`} onClick={() => { setCurrentView('assignments'); setMobileNavOpen(false); }}>
-                <UserCheck size={18} /> Assignments
-              </button>
-            )}
-
-            {currentUser?.role === 'admin' && (
-              <button className={`sidebar-item ${currentView === 'distribution' ? 'active' : ''}`} onClick={() => { setCurrentView('distribution'); setMobileNavOpen(false); }}>
-                <Truck size={18} /> Distribution
-              </button>
-            )}
-
-            {(currentUser?.role === 'admin' || currentUser?.role === 'reviewer' || currentUser?.role === 'contributor') && (
-              <button className={`sidebar-item ${currentView === 'draft_mode' ? 'active' : ''}`} onClick={() => { setCurrentView('draft_mode'); fetchDraftData(); setMobileNavOpen(false); }}>
-                <Layers size={18} /> Family Draft
-              </button>
-            )}
-
-            {currentUser?.role === 'admin' && (
-              <button className={`sidebar-item ${currentView === 'email_preview' ? 'active' : ''}`} onClick={() => { setCurrentView('email_preview'); setMobileNavOpen(false); }}>
-                <Mail size={18} /> Email Catalog Report
-              </button>
-            )}
-
-            {currentUser?.role === 'admin' && (
-              <button className={`sidebar-item ${currentView === 'logs' ? 'active' : ''}`} onClick={() => { setCurrentView('logs'); fetchAuditLogs(); setMobileNavOpen(false); }}>
-                <History size={18} /> Logs
-              </button>
-            )}
-
-            {currentUser?.role === 'admin' && (
-              <button className="sidebar-item" onClick={() => { setShowDiagnosticsModal(true); setMobileNavOpen(false); }}>
-                <Activity size={18} /> 🔍 Offline Diagnostics ({stagedItems.length})
-              </button>
+                {currentUser?.role === 'institution' && (
+                  <button className={`sidebar-item ${currentView === 'institution' ? 'active' : ''}`} onClick={() => { setCurrentView('institution'); setMobileNavOpen(false); }}>
+                    <Building2 size={18} /> Institution Portal
+                  </button>
+                )}
+              </>
             )}
           </div>
 
@@ -2017,6 +2372,28 @@ export default function App() {
                     </div>
                   )}
 
+                  {currentUser?.role === 'admin' && (
+                    <button
+                      className="btn-outline"
+                      style={{
+                        fontSize: '0.82rem',
+                        padding: '0.35rem 0.75rem',
+                        borderRadius: '20px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        fontWeight: 'bold',
+                        color: adminViewMode === 'admin' ? 'var(--pine-primary)' : '#1565c0',
+                        borderColor: adminViewMode === 'admin' ? 'var(--pine-primary)' : '#90caf9',
+                        background: adminViewMode === 'admin' ? '#e8f5e9' : '#e3f2fd'
+                      }}
+                      onClick={handleToggleAdminView}
+                      title={adminViewMode === 'admin' ? 'Switch to regular user experience' : 'Switch back to Admin view'}
+                    >
+                      {adminViewMode === 'admin' ? '👤 Switch to User View' : '👑 Switch to Admin View'}
+                    </button>
+                  )}
+
                   <button
                     className={`btn-outline ${offlineMode ? 'btn-amber-active' : ''}`}
                     style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
@@ -2060,6 +2437,23 @@ export default function App() {
                           </span>
                         </div>
                       </div>
+                      <button
+                        type="button"
+                        className="user-dropdown-action-btn"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          setChangePasswordError(null);
+                          setChangePasswordSuccess(null);
+                          setCurrentPasswordInput('');
+                          setNewPasswordInput('');
+                          setConfirmPasswordInput('');
+                          setShowChangePasswordModal(true);
+                        }}
+                      >
+                        <Key size={16} color="var(--pine-primary)" />
+                        <span>Change Password</span>
+                      </button>
+
                       <button
                         type="button"
                         className="user-dropdown-logout-btn"
@@ -2177,79 +2571,67 @@ export default function App() {
 
               {/* Login Form Container */}
               <div className="login-form-container">
-                <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.45rem', color: 'var(--pine-deep)', marginBottom: '0.25rem' }}>Welcome</h2>
-                <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>Sign in to access the estate inventory.</p>
-
-                {/* Quick Test Logins */}
-                <div className="login-test-accounts-box" style={{ background: 'var(--bg-subtle)', padding: '0.75rem 0.85rem', borderRadius: '8px', marginBottom: '1.25rem', border: '1px solid var(--border-color)' }}>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--pine-primary)', marginBottom: '0.45rem', letterSpacing: '0.5px' }}>⚡ QUICK TEST LOGIN ACCOUNTS (PASSWORD: password123):</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem' }}>
-                    <button
-                      type="button"
-                      className="btn-outline"
-                      style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
-                      onClick={() => { setLoginEmail('dan@unclejim.estate'); setLoginPassword('password123'); handleLogin('dan@unclejim.estate', 'password123'); }}
-                    >
-                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>👑 Dan (Admin)</span>
-                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>dan@unclejim.estate</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-outline"
-                      style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
-                      onClick={() => { setLoginEmail('sarah@unclejim.estate'); setLoginPassword('password123'); handleLogin('sarah@unclejim.estate', 'password123'); }}
-                    >
-                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>📷 Sarah (Photographer)</span>
-                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>sarah@unclejim.estate</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-outline"
-                      style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
-                      onClick={() => { setLoginEmail('jean@unclejim.estate'); setLoginPassword('password123'); handleLogin('jean@unclejim.estate', 'password123'); }}
-                    >
-                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>👤 Jean (Reviewer)</span>
-                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>jean@unclejim.estate</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-outline"
-                      style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem', textAlign: 'left', background: '#fff', display: 'flex', flexDirection: 'column', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '6px' }}
-                      onClick={() => { setLoginEmail('museum@unclejim.estate'); setLoginPassword('password123'); handleLogin('museum@unclejim.estate', 'password123'); }}
-                    >
-                      <span style={{ fontWeight: 'bold', color: 'var(--pine-primary)' }}>🏛️ Museum (Institution)</span>
-                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>museum@unclejim.estate</span>
-                    </button>
-                  </div>
-                </div>
+                <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.45rem', color: 'var(--pine-deep)', marginBottom: '0.25rem' }}>Welcome Family</h2>
+                <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>Select your name and sign in to view the estate inventory.</p>
 
                 <form onSubmit={(e) => { e.preventDefault(); handleLogin(); }}>
-                  <div style={{ marginBottom: '1rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)', marginBottom: '0.3rem' }}>
-                      Email Address
+                  <div style={{ marginBottom: '1.1rem' }}>
+                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)', marginBottom: '0.35rem' }}>
+                      Select Your Name
                     </label>
-                    <input
-                      type="text"
-                      value={loginEmail}
-                      onChange={(e) => setLoginEmail(e.target.value)}
-                      placeholder="e.g. dan@unclejim.estate"
-                      style={{ width: '100%', minHeight: '48px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '16px', boxSizing: 'border-box' }}
+                    <select
+                      value={selectedFamilyMemberId}
+                      onChange={(e) => {
+                        const mId = e.target.value;
+                        setSelectedFamilyMemberId(mId);
+                        const found = familyMembers.find(m => m.id === mId);
+                        if (found) {
+                          setLoginEmail(found.email);
+                        }
+                      }}
+                      style={{
+                        width: '100%',
+                        minHeight: '48px',
+                        padding: '0.6rem 0.85rem',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-color)',
+                        fontSize: '16px',
+                        background: '#fff',
+                        boxSizing: 'border-box'
+                      }}
                       required
-                    />
+                    >
+                      {familyMembers.length === 0 ? (
+                        <option value="">Loading family members...</option>
+                      ) : (
+                        familyMembers.map(m => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} {m.role === 'admin' ? '(Admin)' : ''}
+                          </option>
+                        ))
+                      )}
+                    </select>
                   </div>
-                  <div style={{ marginBottom: '1.25rem' }}>
-                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)', marginBottom: '0.3rem' }}>
-                      Password
-                    </label>
+
+                  <div style={{ marginBottom: '1.35rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                      <label style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)' }}>
+                        Password
+                      </label>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--pine-primary)', fontWeight: '600' }}>
+                        Default: Lombardi
+                      </span>
+                    </div>
                     <input
                       type="password"
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
-                      placeholder="••••••••"
+                      placeholder="Enter password (default: Lombardi)"
                       style={{ width: '100%', minHeight: '48px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '16px', boxSizing: 'border-box' }}
                       required
                     />
                   </div>
+
                   <button
                     type="submit"
                     className="btn-green-senior"
@@ -2258,6 +2640,40 @@ export default function App() {
                     Sign In
                   </button>
                 </form>
+              </div>
+            </div>
+          )}
+
+          {/* ADMIN POST-LOGIN VIEW CHOICE MODAL */}
+          {showAdminChoiceModal && (
+            <div className="modal-overlay" style={{ background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+              <div className="card" style={{ maxWidth: '480px', width: '90%', padding: '2rem', textAlign: 'center', borderRadius: '16px', boxShadow: '0 20px 40px rgba(0,0,0,0.3)' }}>
+                <div style={{ width: '56px', height: '56px', borderRadius: '50%', background: '#e8f5e9', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1rem' }}>
+                  <Trees size={32} color="var(--pine-primary)" />
+                </div>
+                <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.5rem', color: 'var(--pine-deep)', marginBottom: '0.5rem' }}>
+                  Welcome Admin
+                </h2>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', marginBottom: '1.75rem', lineHeight: '1.4' }}>
+                  You are signed in as an Estate Admin. How would you like to enter the application? You can toggle between views anytime.
+                </p>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                  <button
+                    className="btn-green"
+                    style={{ padding: '0.9rem 1.25rem', fontSize: '1rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                    onClick={() => handleChooseAdminMode('admin')}
+                  >
+                    👑 Enter Admin View
+                  </button>
+                  <button
+                    className="btn-outline"
+                    style={{ padding: '0.9rem 1.25rem', fontSize: '1rem', fontWeight: 'bold', color: 'var(--pine-deep)', borderColor: 'var(--pine-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                    onClick={() => handleChooseAdminMode('user')}
+                  >
+                    👤 Enter User View (Cousin Experience)
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -2719,7 +3135,11 @@ export default function App() {
 
           {/* MOCKUP 5: FAMILY MEMBER BROWSE & SEARCH */}
           {currentView === 'catalog' && (() => {
+            const isRegularUserExperience = currentUser?.role !== 'admin' || adminViewMode === 'user';
             const displayedItems = items.filter(item => {
+              if (isRegularUserExperience && !['released', 'assigned', 'distributed', 'completed'].includes(item.status)) {
+                return false;
+              }
               if (catalogInterestFilter === 'my_interests' && !Boolean(item.user_interested)) return false;
               return true;
             });
@@ -2811,14 +3231,10 @@ export default function App() {
                         className="card"
                         style={{ padding: '0.85rem', cursor: 'pointer', position: 'relative', display: 'flex', flexDirection: 'column' }}
                         onClick={() => {
-                          if (currentUser?.role === 'admin') {
+                          if (currentUser?.role === 'admin' && adminViewMode === 'admin') {
                             handleStartEditItem(item);
                           } else {
-                            const idx = items.findIndex(i => i.id === item.id);
-                            if (idx !== -1) setReviewIndex(idx);
-                            setActiveReviewPhotoIdx(0);
-                            setSelectedItem(item);
-                            setCurrentView('review');
+                            handleOpenItemDetail(item);
                           }
                         }}
                       >
@@ -2844,7 +3260,7 @@ export default function App() {
                               objectFit: 'contain'
                             }}
                           />
-                          {currentUser?.role === 'admin' && (
+                          {currentUser?.role === 'admin' && adminViewMode === 'admin' && (
                             <div style={{ position: 'absolute', top: '8px', right: '8px', display: 'flex', gap: '4px', zIndex: 10 }}>
                               <button
                                 onClick={(e) => {
@@ -2867,25 +3283,41 @@ export default function App() {
                             </div>
                           )}
                         </div>
-                        <div style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>{item.title || 'Untitled Item'}</div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
-                          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{item.category_name || "Uncategorized"}</span>
+                        <div style={{ fontWeight: 'bold', fontSize: '1rem', color: 'var(--pine-deep)', lineHeight: '1.3' }}>{item.title || 'Untitled Item'}</div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{item.category_name || "Uncategorized"}</span>
                           {item.value && (
-                            <span style={{ fontSize: '0.82rem', fontWeight: 'bold', color: 'var(--pine-primary)' }}>
+                            <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--pine-primary)' }}>
                               {item.value.startsWith('$') ? item.value : `$${item.value}`}
                             </span>
                           )}
                         </div>
 
-                        {/* Offline Pending / Admin Release Status Badge */}
-                        {item.is_offline ? (
-                          <div style={{ alignSelf: 'flex-start', marginTop: '4px' }}>
-                            <span className="badge-status" style={{ fontSize: '0.72rem', padding: '2px 8px', background: item.sync_status === 'failed' ? '#fee2e2' : '#fef3c7', color: item.sync_status === 'failed' ? '#b91c1c' : '#b45309', border: item.sync_status === 'failed' ? '1px solid #fca5a5' : '1px solid #fde68a', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                              {item.sync_status === 'failed' ? '⚠️ Upload Failed (Pending)' : '⏳ Upload Pending'}
-                            </span>
-                          </div>
-                        ) : (
-                          currentUser?.role === 'admin' && (
+                        {/* Short Description Preview for Easy Recognition */}
+                        {item.description && (
+                          <p style={{
+                            fontSize: '0.82rem',
+                            color: 'var(--text-muted)',
+                            margin: '4px 0 6px 0',
+                            overflow: 'hidden',
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            lineHeight: '1.35'
+                          }}>
+                            {item.description}
+                          </p>
+                        )}
+
+                        {/* Offline Pending / Admin Release Status Badge (Admin mode only) */}
+                        {currentUser?.role === 'admin' && adminViewMode === 'admin' && (
+                          item.is_offline ? (
+                            <div style={{ alignSelf: 'flex-start', marginTop: '4px' }}>
+                              <span className="badge-status" style={{ fontSize: '0.72rem', padding: '2px 8px', background: item.sync_status === 'failed' ? '#fee2e2' : '#fef3c7', color: item.sync_status === 'failed' ? '#b91c1c' : '#b45309', border: item.sync_status === 'failed' ? '1px solid #fca5a5' : '1px solid #fde68a', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                {item.sync_status === 'failed' ? '⚠️ Upload Failed (Pending)' : '⏳ Upload Pending'}
+                              </span>
+                            </div>
+                          ) : (
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginTop: '6px', gap: '4px' }}>
                               {item.status === 'released' ? (
                                 <span className="badge-status badge-released" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
@@ -2917,7 +3349,6 @@ export default function App() {
                           )
                         )}
 
-
                         {/* Institutional Candidate Badge */}
                         {item.institutional_candidate && ['Maritime Museum', 'Library', 'TBD'].includes(item.institutional_candidate) && (
                           <div style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '2px 8px', borderRadius: '4px', marginTop: '4px' }}>
@@ -2932,35 +3363,40 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* Interested Cousins List */}
-                        {item.interested_names && (
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                            ⭐ Interested: {item.interested_names}
+                        {/* Interested Cousins Count */}
+                        {item.interested_count > 0 && (
+                          <div style={{ fontSize: '0.75rem', color: 'var(--pine-primary)', fontWeight: '600', marginTop: '4px' }}>
+                            ⭐ {item.interested_count} family member(s) interested
                           </div>
                         )}
 
-                        <div style={{ marginTop: 'auto', paddingTop: '0.6rem' }}>
-                          {/* Family Interest Toggle Button */}
+                        <div style={{ marginTop: 'auto', paddingTop: '0.75rem' }}>
+                          {/* 1-Tap Prominent I'm Interested Button */}
                           <button
                             className={Boolean(item.user_interested) ? 'btn-green' : 'btn-outline'}
                             style={{
-                              fontSize: '0.8rem',
-                              padding: '0.45rem 0.65rem',
+                              fontSize: '0.88rem',
+                              padding: '0.55rem 0.85rem',
                               width: '100%',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
-                              gap: '0.35rem',
-                              fontWeight: Boolean(item.user_interested) ? 'bold' : 'normal',
-                              background: Boolean(item.user_interested) ? 'var(--pine-primary)' : '#fff'
+                              gap: '0.45rem',
+                              fontWeight: 'bold',
+                              borderRadius: '8px',
+                              background: Boolean(item.user_interested) ? '#2e7d32' : '#ffffff',
+                              color: Boolean(item.user_interested) ? '#ffffff' : 'var(--pine-primary)',
+                              borderColor: Boolean(item.user_interested) ? '#2e7d32' : 'var(--pine-primary)',
+                              boxShadow: Boolean(item.user_interested) ? '0 2px 4px rgba(46,125,50,0.25)' : 'none'
                             }}
                             onClick={(e) => handleToggleInterest(item, e)}
+                            title={Boolean(item.user_interested) ? "Click to unmark interest" : "Click to mark as interested"}
                           >
-                            <Star size={15} fill={Boolean(item.user_interested) ? '#f59e0b' : 'none'} color={Boolean(item.user_interested) ? '#f59e0b' : 'var(--pine-primary)'} />
-                            {Boolean(item.user_interested) ? "Interested (Tap to Remove)" : "I'm Interested"}
+                            <Star size={16} fill={Boolean(item.user_interested) ? '#f59e0b' : 'none'} color={Boolean(item.user_interested) ? '#f59e0b' : 'currentColor'} />
+                            {Boolean(item.user_interested) ? "★ I'm Interested" : "☆ I'm Interested"}
                           </button>
 
-                          {currentUser?.role === 'admin' && (
+                          {currentUser?.role === 'admin' && adminViewMode === 'admin' && (
                             <button
                               className="btn-outline"
                               style={{ fontSize: '0.8rem', padding: '0.4rem 0.6rem', marginTop: '0.4rem', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem', color: 'var(--pine-primary)', borderColor: 'var(--pine-primary)' }}
@@ -2981,21 +3417,28 @@ export default function App() {
             );
           })()}
 
-          {/* MOCKUP 6 & 7: FAMILY MEMBER REVIEW ITEM (ONE AT A TIME) */}
+          {/* ITEM DETAIL / DRILL DOWN VIEW (with Photo Gallery, I'm Interested, Stories, and Questions) */}
           {currentView === 'review' && (() => {
-            const currentReviewItem = items[reviewIndex % Math.max(1, items.length)];
+            const currentReviewItem = selectedItem || items[reviewIndex % Math.max(1, items.length)];
             const reviewPhotos = currentReviewItem?.photos && currentReviewItem.photos.length > 0
               ? currentReviewItem.photos
               : (currentReviewItem?.primary_photo ? [{ photo_url: currentReviewItem.primary_photo, thumbnail_url: currentReviewItem.primary_thumb || currentReviewItem.primary_photo }] : []);
-            const activeDisplayPhoto = reviewPhotos[activeReviewPhotoIdx]?.photo_url || currentReviewItem?.primary_photo || "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=800&q=80";
+            const activeDisplayPhoto = reviewPhotos[activeReviewPhotoIdx]?.photo_url || currentReviewItem?.primary_photo || OFFLINE_THUMB;
 
             return (
-              <div className="review-view-container">
-                <div className="review-top-bar">
-                  <button className="btn-outline" onClick={() => setCurrentView('catalog')}><ArrowLeft size={16} /> Back to Browse</button>
-                  <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>Item {(reviewIndex % Math.max(1, items.length)) + 1} of {items.length || 1}</span>
+              <div className="review-view-container" style={{ maxWidth: '900px', margin: '0 auto', paddingBottom: '3rem' }}>
+                {/* Navigation Bar */}
+                <div className="review-top-bar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <button
+                    className="btn-outline"
+                    style={{ fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.9rem' }}
+                    onClick={() => setCurrentView('catalog')}
+                  >
+                    <ArrowLeft size={18} /> Back to Browse
+                  </button>
+
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                    {currentUser?.role === 'admin' && currentReviewItem && (
+                    {currentUser?.role === 'admin' && adminViewMode === 'admin' && currentReviewItem && (
                       <>
                         {currentReviewItem.status === 'released' ? (
                           <>
@@ -3004,10 +3447,10 @@ export default function App() {
                             </span>
                             <button
                               className="btn-outline"
-                              style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem', color: '#c62828', borderColor: '#ef9a9a', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                              style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem', color: '#c62828', borderColor: '#ef9a9a', fontWeight: 'bold' }}
                               onClick={() => handleUnreleaseItem(currentReviewItem.id)}
                             >
-                              ↩️ Unrelease Item
+                              ↩️ Unrelease
                             </button>
                           </>
                         ) : (
@@ -3017,10 +3460,10 @@ export default function App() {
                             </span>
                             <button
                               className="btn-green"
-                              style={{ padding: '0.4rem 0.85rem', fontSize: '0.85rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                              style={{ padding: '0.4rem 0.85rem', fontSize: '0.85rem', fontWeight: 'bold' }}
                               onClick={() => handleReleaseItem(currentReviewItem.id)}
                             >
-                              🚀 Release for Family Review
+                              🚀 Release
                             </button>
                           </>
                         )}
@@ -3028,150 +3471,282 @@ export default function App() {
                           className="btn-outline"
                           style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem', color: 'var(--pine-primary)', borderColor: 'var(--pine-primary)', display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 'bold' }}
                           onClick={() => handleStartEditItem(currentReviewItem)}
-                          title="Edit this item and its pictures"
                         >
-                          <Edit3 size={15} /> Edit Item & Pictures
+                          <Edit3 size={15} /> Edit Item
                         </button>
                       </>
                     )}
-                    <button className="btn-outline" style={{ padding: '0.4rem 0.6rem' }} onClick={() => { setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev - 1 + Math.max(1, items.length)) % Math.max(1, items.length)); }} title="Previous Item"><ArrowLeft size={16} /></button>
-                    <button className="btn-outline" style={{ padding: '0.4rem 0.6rem' }} onClick={() => { setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev + 1) % Math.max(1, items.length)); }} title="Next Item"><ArrowRight size={16} /></button>
                   </div>
                 </div>
 
-                {!decisionRecorded ? (
-                  <div>
-                    {/* Mockup 6 Main Card */}
-                    <div className="review-main-card">
-                      <div className="review-left-gallery">
-                        <img src={activeDisplayPhoto} className="review-main-img" alt={currentReviewItem?.title || "Item Preview"} />
-                        {reviewPhotos.length <= 1 ? (
-                          <div className="review-thumbs-row" style={{ alignItems: 'center', gap: '0.75rem', marginTop: '0.5rem' }}>
-                            {reviewPhotos.length === 1 && (
-                              <img src={reviewPhotos[0].thumbnail_url || reviewPhotos[0].photo_url} className="review-thumb active" alt="Primary Photo" />
-                            )}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#f0f4f2', border: '1px dashed var(--border-color)', borderRadius: '8px', padding: '0.5rem 0.85rem', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
-                              <ImageOff size={18} />
-                              <span>No other pictures</span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="review-thumbs-row">
-                            {reviewPhotos.map((p, idx) => (
-                              <img
-                                key={p.id || idx}
-                                src={p.thumbnail_url || p.photo_url}
-                                className={`review-thumb ${activeReviewPhotoIdx === idx ? 'active' : ''}`}
-                                onClick={() => setActiveReviewPhotoIdx(idx)}
-                                alt={`Thumb ${idx + 1}`}
-                              />
-                            ))}
-                          </div>
+                {/* Main Item Detail Card */}
+                <div className="card" style={{ padding: '1.5rem', borderRadius: '16px', marginBottom: '1.5rem', background: '#fff', boxShadow: 'var(--shadow-md)' }}>
+                  {/* Photo Display */}
+                  <div style={{ position: 'relative', width: '100%', maxHeight: '480px', borderRadius: '12px', overflow: 'hidden', backgroundColor: '#f6f5f0', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1rem' }}>
+                    <img
+                      src={activeDisplayPhoto}
+                      alt={currentReviewItem?.title || "Item Photo"}
+                      style={{ maxWidth: '100%', maxHeight: '460px', objectFit: 'contain', display: 'block' }}
+                    />
+                  </div>
+
+                  {/* Thumbnails row if multiple photos */}
+                  {reviewPhotos.length > 1 && (
+                    <div style={{ display: 'flex', gap: '0.6rem', overflowX: 'auto', paddingBottom: '0.5rem', marginBottom: '1.25rem' }}>
+                      {reviewPhotos.map((p, idx) => (
+                        <img
+                          key={p.id || idx}
+                          src={p.thumbnail_url || p.photo_url}
+                          style={{
+                            width: '72px',
+                            height: '72px',
+                            objectFit: 'cover',
+                            borderRadius: '8px',
+                            cursor: 'pointer',
+                            border: activeReviewPhotoIdx === idx ? '3px solid var(--pine-primary)' : '1px solid var(--border-color)',
+                            opacity: activeReviewPhotoIdx === idx ? 1 : 0.75,
+                            flexShrink: 0
+                          }}
+                          onClick={() => setActiveReviewPhotoIdx(idx)}
+                          alt={`Thumbnail ${idx + 1}`}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Header Title & Category */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1rem' }}>
+                    <div>
+                      <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.75rem', color: 'var(--pine-deep)', margin: '0 0 0.35rem 0' }}>
+                        {currentReviewItem?.title || "Untitled Item"}
+                      </h1>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span className="tag-pill" style={{ background: '#e8f0ec', color: 'var(--pine-primary)', fontWeight: 'bold' }}>
+                          {currentReviewItem?.category_name || "Uncategorized"}
+                        </span>
+                        {currentReviewItem?.item_number && (
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                            ID: {currentReviewItem.item_number}
+                          </span>
                         )}
-                      </div>
-
-                      <div className="review-right-info">
-                        <div className="review-item-header">
-                          <h2 className="review-item-name">{currentReviewItem?.title || "Untitled Item"}</h2>
-                          <Heart size={22} color="#d32f2f" fill="#d32f2f" />
-                        </div>
-
-                        <table className="details-table">
-                          <tbody>
-                            <tr><td className="label">Category</td><td className="val">{currentReviewItem?.category_name || "—"}</td></tr>
-                            <tr><td className="label">Value</td><td className="val">{currentReviewItem?.value ? (currentReviewItem.value.startsWith('$') ? currentReviewItem.value : `$${currentReviewItem.value}`) : "—"}</td></tr>
-                            <tr><td className="label">Dimensions</td><td className="val">{currentReviewItem?.dimensions || "—"}</td></tr>
-                            <tr><td className="label">Condition</td><td className="val">{currentReviewItem?.condition || "—"}</td></tr>
-                          </tbody>
-                        </table>
-
-                        <div className="review-section-title">Description</div>
-                        <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '0.85rem' }}>
-                          {currentReviewItem?.description || "No description provided."}
-                        </div>
-
-                        {(currentReviewItem?.story || currentReviewItem?.story_text) && (
-                          <>
-                            <div className="review-section-title">Story / History</div>
-                            <div className="review-story-text">
-                              "{currentReviewItem.story || currentReviewItem.story_text}"
-                            </div>
-                          </>
-                        )}
-
-                        {currentReviewItem?.category_name && (
-                          <div className="tags-row">
-                            <span className="tag-pill">{currentReviewItem.category_name}</span>
-                          </div>
+                        {currentReviewItem?.value && (
+                          <span style={{ fontSize: '0.95rem', fontWeight: 'bold', color: 'var(--pine-primary)' }}>
+                            Estimated Value: {currentReviewItem.value.startsWith('$') ? currentReviewItem.value : `$${currentReviewItem.value}`}
+                          </span>
                         )}
                       </div>
                     </div>
 
-                    {/* Mockup 7: Who's Interested & Decision Panel */}
-                    <div className="decision-panel">
-                      {currentReviewItem?.institutional_candidate && ['Maritime Museum', 'Library', 'TBD'].includes(currentReviewItem.institutional_candidate) && (
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: 'bold', color: '#1565c0', background: '#e3f2fd', padding: '4px 10px', borderRadius: '6px', marginBottom: '0.75rem' }}>
-                          🏛️ Institutional Candidate: {currentReviewItem.institutional_candidate}
-                        </div>
-                      )}
-
-                      <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.1rem', marginBottom: '0.85rem' }}>Who's interested?</h3>
-                      {currentReviewItem?.interested_count > 0 ? (
-                        <div style={{ fontSize: '0.9rem', color: 'var(--pine-primary)', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-                          ❤️ {currentReviewItem.interested_count} family member(s) marked interest in this item.
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontStyle: 'italic', marginBottom: '0.5rem' }}>
-                          No family members have marked interest yet.
-                        </div>
-                      )}
-                      {currentReviewItem?.interested_names && (
-                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-                          ⭐ Interested family members: <strong>{currentReviewItem.interested_names}</strong>
-                        </div>
-                      )}
-
-                      <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.1rem', marginBottom: '0.85rem' }}>Your decision</h3>
-                      <div className="decision-btn-group">
-                        <button className={`btn-decision ${userDecision === 'interested' ? 'active-interested' : ''}`} onClick={() => setUserDecision('interested')}>
-                          💙 I'm Interested
-                        </button>
-                        <button className={`btn-decision ${userDecision === 'not_interested' ? 'active-pass' : ''}`} onClick={() => setUserDecision('not_interested')}>
-                          🚫 Not Interested
-                        </button>
-                        <button className="btn-decision" onClick={() => setUserDecision('skip')}>
-                          ⏰ Skip for Now
-                        </button>
-                      </div>
-
-                      <div style={{ marginBottom: '1rem' }}>
-                        <input type="text" className="form-input" style={{ width: '100%' }} placeholder="Add an optional comment..." value={userComment} onChange={e=>setUserComment(e.target.value)} />
-                      </div>
-
-                      <button className="btn-green" style={{ width: '100%', padding: '0.8rem' }} onClick={() => handleSaveFamilyDecision(currentReviewItem?.id || 'item_101')}>
-                        Save My Decision
+                    {/* Prominent 1-Tap Interest Button */}
+                    <div style={{ minWidth: '180px' }}>
+                      <button
+                        className={Boolean(currentReviewItem?.user_interested) ? 'btn-green' : 'btn-outline'}
+                        style={{
+                          width: '100%',
+                          minHeight: '48px',
+                          padding: '0.65rem 1.25rem',
+                          fontSize: '1rem',
+                          fontWeight: 'bold',
+                          borderRadius: '10px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '0.5rem',
+                          background: Boolean(currentReviewItem?.user_interested) ? '#2e7d32' : '#ffffff',
+                          color: Boolean(currentReviewItem?.user_interested) ? '#ffffff' : 'var(--pine-primary)',
+                          borderColor: Boolean(currentReviewItem?.user_interested) ? '#2e7d32' : 'var(--pine-primary)',
+                          boxShadow: Boolean(currentReviewItem?.user_interested) ? '0 2px 6px rgba(46,125,50,0.3)' : 'none'
+                        }}
+                        onClick={async () => {
+                          await handleToggleInterest(currentReviewItem);
+                          // refresh current selected item
+                          if (currentReviewItem) {
+                            const updated = items.find(i => i.id === currentReviewItem.id);
+                            if (updated) setSelectedItem(updated);
+                          }
+                        }}
+                      >
+                        <Star size={18} fill={Boolean(currentReviewItem?.user_interested) ? '#f59e0b' : 'none'} color={Boolean(currentReviewItem?.user_interested) ? '#f59e0b' : 'currentColor'} />
+                        {Boolean(currentReviewItem?.user_interested) ? "★ I'm Interested" : "☆ I'm Interested"}
                       </button>
+                      {currentReviewItem?.interested_count > 0 && (
+                        <div style={{ fontSize: '0.78rem', color: 'var(--pine-primary)', textAlign: 'center', marginTop: '4px', fontWeight: '600' }}>
+                          ⭐ {currentReviewItem.interested_count} family member(s) interested
+                        </div>
+                      )}
                     </div>
                   </div>
-                ) : (
-                  /* MOCKUP 8: DECISION RECORDED CONFIRMATION */
-                  <div className="confirmation-card">
-                    <div className="check-circle-lg">✓</div>
-                    <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.8rem', color: 'var(--pine-deep)' }}>Thanks!</h2>
-                    <p style={{ color: 'var(--text-muted)', marginBottom: '1.5rem' }}>Your decision has been recorded.</p>
 
-                    <div style={{ background: 'var(--bg-subtle)', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem' }}>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>You marked:</div>
-                      <div style={{ fontWeight: 'bold', fontSize: '1.1rem', color: '#2e7d32', marginTop: '4px' }}>
-                        {userDecision === 'interested' ? "❤️ I'm Interested" : userDecision === 'not_interested' ? "🚫 Not Interested" : "⏰ Skipped"}
-                      </div>
+                  {/* Attributes Table */}
+                  <table className="details-table" style={{ width: '100%', margin: '1rem 0 1.25rem 0' }}>
+                    <tbody>
+                      {currentReviewItem?.location_in_house && (
+                        <tr><td className="label">Location in House</td><td className="val">{currentReviewItem.location_in_house}</td></tr>
+                      )}
+                      {currentReviewItem?.condition && (
+                        <tr><td className="label">Condition</td><td className="val">{currentReviewItem.condition}</td></tr>
+                      )}
+                      {currentReviewItem?.dimensions && (
+                        <tr><td className="label">Dimensions</td><td className="val">{currentReviewItem.dimensions}</td></tr>
+                      )}
+                      {currentReviewItem?.weight && (
+                        <tr><td className="label">Weight</td><td className="val">{currentReviewItem.weight}</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+
+                  {/* Description */}
+                  <div style={{ marginBottom: '1.25rem' }}>
+                    <h3 style={{ fontSize: '1rem', fontWeight: 'bold', color: 'var(--pine-deep)', marginBottom: '0.4rem' }}>
+                      Description
+                    </h3>
+                    <p style={{ fontSize: '0.95rem', color: '#2c3e35', lineHeight: '1.5', whiteSpace: 'pre-line' }}>
+                      {currentReviewItem?.description || "No description provided."}
+                    </p>
+                  </div>
+
+                  {/* Existing Notes / Special Handling if present */}
+                  {currentReviewItem?.special_handling_notes && (
+                    <div style={{ marginBottom: '1.25rem', background: '#fcf8e3', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid #faebcc' }}>
+                      <h4 style={{ fontSize: '0.88rem', fontWeight: 'bold', color: '#8a6d3b', margin: '0 0 4px 0' }}>
+                        📌 Notes / Special Handling
+                      </h4>
+                      <p style={{ fontSize: '0.88rem', color: '#66512c', margin: 0 }}>
+                        {currentReviewItem.special_handling_notes}
+                      </p>
                     </div>
+                  )}
+                </div>
 
-                    <button className="btn-green" style={{ width: '100%', padding: '0.85rem' }} onClick={() => { setDecisionRecorded(false); setActiveReviewPhotoIdx(0); setReviewIndex(prev => (prev + 1) % Math.max(1, items.length)); }}>
-                      Proceed to Next Item ➔
+                {/* SECTION 2: SHARE A STORY / MEMORY */}
+                <div className="card" style={{ padding: '1.5rem', borderRadius: '16px', marginBottom: '1.5rem', background: '#fff', boxShadow: 'var(--shadow-sm)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.85rem' }}>
+                    <MessageSquare size={22} color="var(--pine-primary)" />
+                    <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.25rem', color: 'var(--pine-deep)', margin: 0 }}>
+                      Stories & Memories
+                    </h2>
+                  </div>
+                  <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
+                    Do you have a personal memory, story, or history about this item? Share it here with the family!
+                  </p>
+
+                  {/* List of existing stories */}
+                  {itemDetailStories && itemDetailStories.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', marginBottom: '1.25rem' }}>
+                      {itemDetailStories.map(story => (
+                        <div key={story.id} style={{ background: '#f8faf9', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '0.9rem 1.1rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                            <span style={{ fontWeight: 'bold', fontSize: '0.9rem', color: 'var(--pine-deep)' }}>
+                              {story.user_name || story.provenance_source || "Family Memory"}
+                            </span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                              {story.created_at ? new Date(story.created_at).toLocaleDateString() : ''}
+                            </span>
+                          </div>
+                          <p style={{ fontSize: '0.92rem', color: '#2c3e35', margin: 0, lineHeight: '1.45', whiteSpace: 'pre-line' }}>
+                            "{story.story_text}"
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontStyle: 'italic', marginBottom: '1.25rem' }}>
+                      No stories shared for this item yet. Be the first to share one!
+                    </div>
+                  )}
+
+                  {/* Submit a story form */}
+                  <form onSubmit={(e) => { e.preventDefault(); handleSubmitStory(currentReviewItem.id); }}>
+                    <textarea
+                      value={newStoryText}
+                      onChange={(e) => setNewStoryText(e.target.value)}
+                      placeholder="Type a memory, story, or where you remember this being in Uncle Jim's home..."
+                      rows={3}
+                      style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.92rem', boxSizing: 'border-box', marginBottom: '0.75rem', outline: 'none' }}
+                      required
+                    />
+                    <button
+                      type="submit"
+                      className="btn-green"
+                      disabled={isSubmittingStory || !newStoryText.trim()}
+                      style={{ padding: '0.55rem 1.25rem', fontSize: '0.9rem', fontWeight: 'bold', cursor: 'pointer' }}
+                    >
+                      {isSubmittingStory ? 'Saving...' : '💬 Share Story'}
                     </button>
+                  </form>
+                </div>
+
+                {/* SECTION 3: ASK A QUESTION */}
+                <div className="card" style={{ padding: '1.5rem', borderRadius: '16px', background: '#fff', boxShadow: 'var(--shadow-sm)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.85rem' }}>
+                    <HelpCircle size={22} color="#1565c0" />
+                    <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.25rem', color: 'var(--pine-deep)', margin: 0 }}>
+                      Ask a Question
+                    </h2>
                   </div>
-                )}
+                  <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
+                    Have a question about this item's condition, history, or dimensions? Ask below and an Admin will respond.
+                  </p>
+
+                  {/* List of existing questions and answers */}
+                  {itemDetailQuestions && itemDetailQuestions.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', marginBottom: '1.25rem' }}>
+                      {itemDetailQuestions.map(q => (
+                        <div key={q.id} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '0.9rem 1.1rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                            <span style={{ fontWeight: 'bold', fontSize: '0.9rem', color: '#1e293b' }}>
+                              ❓ {q.user_name || 'Family Member'} asks:
+                            </span>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                              {q.created_at ? new Date(q.created_at).toLocaleDateString() : ''}
+                            </span>
+                          </div>
+                          <p style={{ fontSize: '0.92rem', color: '#334155', margin: '0 0 0.5rem 0', lineHeight: '1.4' }}>
+                            {q.question}
+                          </p>
+                          {q.is_answered ? (
+                            <div style={{ background: '#e8f5e9', borderLeft: '3px solid #2e7d32', padding: '0.5rem 0.85rem', borderRadius: '4px', marginTop: '0.5rem' }}>
+                              <div style={{ fontSize: '0.78rem', fontWeight: 'bold', color: '#2e7d32', marginBottom: '2px' }}>
+                                💡 Admin Response {q.answered_by_name ? `(${q.answered_by_name})` : ''}:
+                              </div>
+                              <div style={{ fontSize: '0.88rem', color: '#1b5e20' }}>
+                                {q.answer}
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: '0.78rem', color: '#d97706', fontStyle: 'italic', marginTop: '4px' }}>
+                              ⏳ Awaiting response from Admin...
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontStyle: 'italic', marginBottom: '1.25rem' }}>
+                      No questions asked yet for this item.
+                    </div>
+                  )}
+
+                  {/* Submit a question form */}
+                  <form onSubmit={(e) => { e.preventDefault(); handleSubmitQuestion(currentReviewItem.id); }}>
+                    <textarea
+                      value={newQuestionText}
+                      onChange={(e) => setNewQuestionText(e.target.value)}
+                      placeholder="Ask a question about this item..."
+                      rows={2}
+                      style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.92rem', boxSizing: 'border-box', marginBottom: '0.75rem', outline: 'none' }}
+                      required
+                    />
+                    <button
+                      type="submit"
+                      className="btn-green"
+                      disabled={isSubmittingQuestion || !newQuestionText.trim()}
+                      style={{ padding: '0.55rem 1.25rem', fontSize: '0.9rem', fontWeight: 'bold', cursor: 'pointer' }}
+                    >
+                      {isSubmittingQuestion ? 'Submitting...' : '❓ Submit Question'}
+                    </button>
+                  </form>
+                </div>
               </div>
             );
           })()}
@@ -4029,50 +4604,321 @@ export default function App() {
             />
           )}
 
-          {/* MY INTERESTED ITEMS REPORT VIEW FOR STANDARD USERS */}
-          {currentView === 'my_interests' && (
-            <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid var(--border-color)', padding: '1.75rem', boxShadow: 'var(--shadow-md)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '2px solid var(--bg-app)', paddingBottom: '1rem' }}>
-                <div>
-                  <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.6rem', color: 'var(--pine-deep)' }}>
-                    💙 My Interested Items Report
-                  </h2>
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem' }}>
-                    Items you have marked interest in. You can change your decision or update comments anytime.
-                  </p>
-                </div>
-                <button className="btn-outline" onClick={fetchMyInterests}>Refresh Report</button>
-              </div>
-
-              {myInterests.length === 0 ? (
-                <div style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                  <Heart size={48} color="var(--pine-primary)" style={{ opacity: 0.5, marginBottom: '0.85rem' }} />
-                  <div style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>You haven't requested any items yet</div>
-                  <p style={{ fontSize: '0.9rem', marginTop: '0.3rem' }}>Browse the catalog or Family Review to indicate items you are interested in.</p>
-                  <button className="btn-green-senior" style={{ marginTop: '1.25rem', padding: '0.75rem 1.5rem' }} onClick={() => setCurrentView('catalog')}>
-                    Browse Catalog Now ➔
+          {/* MY INTERESTED ITEMS VIEW */}
+          {currentView === 'my_interests' && (() => {
+            const myInterestsList = items.filter(i => Boolean(i.user_interested));
+            return (
+              <div style={{ maxWidth: '900px', margin: '0 auto', paddingBottom: '3rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                  <div>
+                    <button
+                      className="btn-outline"
+                      style={{ fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.85rem', marginBottom: '0.5rem' }}
+                      onClick={() => setCurrentView('catalog')}
+                    >
+                      <ArrowLeft size={16} /> Back to Browse
+                    </button>
+                    <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.65rem', color: 'var(--pine-deep)', margin: 0 }}>
+                      ⭐ My Interested Items ({myInterestsList.length})
+                    </h1>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '4px' }}>
+                      Possessions you have saved to your watch list. You can view details or remove interest anytime.
+                    </p>
+                  </div>
+                  <button className="btn-green" onClick={() => setCurrentView('catalog')}>
+                    Browse More Items ➔
                   </button>
                 </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                  {myInterests.map((item) => (
-                    <div key={item.id} style={{ display: 'flex', gap: '1.25rem', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1.25rem', background: '#f9fbf9', alignItems: 'center' }}>
-                      <img src={item.primary_photo || OFFLINE_THUMB} style={{ width: '100px', height: '90px', objectFit: 'cover', borderRadius: '8px' }} alt={item.title} />
-                      <div style={{ flex: 1 }}>
-                        <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.25rem', color: 'var(--pine-deep)' }}>{item.title}</h3>
-                        {item.comment && (
-                          <div style={{ fontSize: '0.9rem', fontStyle: 'italic', color: '#234e38', background: '#e8f0ec', padding: '0.4rem 0.75rem', borderRadius: '6px', display: 'inline-block' }}>
-                            "{item.comment}"
+
+                {myInterestsList.length === 0 ? (
+                  <div className="card" style={{ padding: '3rem 1.5rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <Star size={48} color="var(--pine-primary)" style={{ opacity: 0.4, marginBottom: '0.85rem' }} />
+                    <h3 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--pine-deep)', marginBottom: '0.4rem' }}>
+                      No items in your watch list yet
+                    </h3>
+                    <p style={{ fontSize: '0.9rem', maxWidth: '440px', margin: '0 auto 1.25rem auto' }}>
+                      Browse the estate collection and tap "☆ I'm Interested" on any item you would like to follow.
+                    </p>
+                    <button className="btn-green" style={{ padding: '0.65rem 1.4rem' }} onClick={() => setCurrentView('catalog')}>
+                      Browse Catalog Now ➔
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    {myInterestsList.map((item) => (
+                      <div
+                        key={item.id}
+                        className="card"
+                        style={{
+                          display: 'flex',
+                          gap: '1.25rem',
+                          padding: '1.1rem',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => handleOpenItemDetail(item)}
+                      >
+                        <div style={{ width: '100px', height: '100px', borderRadius: '10px', overflow: 'hidden', backgroundColor: '#f6f5f0', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <CachedThumbnail
+                            url={item.primary_thumb || item.primary_photo}
+                            version={item.primary_thumb_version}
+                            alt={item.title}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          />
+                        </div>
+
+                        <div style={{ flex: 1, minWidth: '220px' }}>
+                          <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.15rem', color: 'var(--pine-deep)', margin: '0 0 4px 0' }}>
+                            {item.title}
+                          </h3>
+                          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '6px' }}>
+                            <span className="tag-pill" style={{ fontSize: '0.75rem' }}>{item.category_name || "Uncategorized"}</span>
+                            {item.value && (
+                              <span style={{ fontSize: '0.82rem', fontWeight: 'bold', color: 'var(--pine-primary)' }}>
+                                {item.value.startsWith('$') ? item.value : `$${item.value}`}
+                              </span>
+                            )}
                           </div>
-                        )}
+                          {item.description && (
+                            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: 0, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                              {item.description}
+                            </p>
+                          )}
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', alignItems: 'flex-end', marginLeft: 'auto' }} onClick={e => e.stopPropagation()}>
+                          <button
+                            className="btn-outline"
+                            style={{
+                              padding: '0.45rem 0.9rem',
+                              fontSize: '0.85rem',
+                              color: '#c62828',
+                              borderColor: '#ef9a9a',
+                              fontWeight: '600',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.35rem'
+                            }}
+                            onClick={async () => {
+                              await handleToggleInterest(item);
+                            }}
+                          >
+                            ✕ Remove Interest
+                          </button>
+                          <button
+                            className="btn-green"
+                            style={{ padding: '0.45rem 0.9rem', fontSize: '0.85rem', fontWeight: '600' }}
+                            onClick={() => handleOpenItemDetail(item)}
+                          >
+                            View Item Details ➔
+                          </button>
+                        </div>
                       </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', alignItems: 'flex-end' }}>
-                        <span className={`badge-status ${item.interest_level === 'interested' ? 'badge-released' : 'badge-draft'}`} style={{ fontSize: '0.85rem', padding: '0.4rem 0.8rem' }}>
-                          {item.interest_level === 'interested' ? '❤️ Marked Interested' : '🚫 Pass'}
-                        </span>
-                        <button className="btn-outline" style={{ fontSize: '0.8rem', padding: '0.35rem 0.7rem' }} onClick={() => { const idx = items.findIndex(i => i.id === item.id); if (idx !== -1) setReviewIndex(idx); setActiveReviewPhotoIdx(0); setSelectedItem(item); setCurrentView('review'); }}>
-                          Change Decision ➔
-                        </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ADMIN QUESTIONS VIEW */}
+          {currentView === 'admin_questions' && currentUser?.role === 'admin' && (
+            <div style={{ maxWidth: '960px', margin: '0 auto', paddingBottom: '3rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div>
+                  <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.65rem', color: 'var(--pine-deep)', margin: '0 0 4px 0' }}>
+                    ❓ Family Member Questions
+                  </h1>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>
+                    Review questions asked by family members and submit answers that appear on the item detail page.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn-outline" onClick={() => fetchAdminQuestions(adminQuestionsFilter)}>
+                    🔄 Refresh Questions
+                  </button>
+                  <button className="btn-green" onClick={handleNavigateHome}>
+                    🏠 Return to Dashboard
+                  </button>
+                </div>
+              </div>
+
+              {/* Status Filter Tabs */}
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem' }}>
+                <button
+                  className={`btn-outline ${adminQuestionsFilter === 'all' ? 'btn-green' : ''}`}
+                  style={{ borderRadius: '20px', padding: '0.35rem 0.85rem', fontSize: '0.85rem' }}
+                  onClick={() => { setAdminQuestionsFilter('all'); fetchAdminQuestions('all'); }}
+                >
+                  All Questions
+                </button>
+                <button
+                  className={`btn-outline ${adminQuestionsFilter === 'unanswered' ? 'btn-green' : ''}`}
+                  style={{ borderRadius: '20px', padding: '0.35rem 0.85rem', fontSize: '0.85rem' }}
+                  onClick={() => { setAdminQuestionsFilter('unanswered'); fetchAdminQuestions('unanswered'); }}
+                >
+                  ⏳ Unanswered Only
+                </button>
+                <button
+                  className={`btn-outline ${adminQuestionsFilter === 'answered' ? 'btn-green' : ''}`}
+                  style={{ borderRadius: '20px', padding: '0.35rem 0.85rem', fontSize: '0.85rem' }}
+                  onClick={() => { setAdminQuestionsFilter('answered'); fetchAdminQuestions('answered'); }}
+                >
+                  ✅ Answered
+                </button>
+              </div>
+
+              {isLoadingAdminQA ? (
+                <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <Loader2 className="animate-spin" size={32} style={{ margin: '0 auto 0.75rem auto' }} />
+                  <div>Loading questions...</div>
+                </div>
+              ) : adminQuestions.length === 0 ? (
+                <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <HelpCircle size={44} color="var(--pine-primary)" style={{ opacity: 0.4, margin: '0 auto 0.75rem auto' }} />
+                  <h3 style={{ fontSize: '1.15rem', color: 'var(--pine-deep)' }}>No questions found</h3>
+                  <p style={{ fontSize: '0.88rem' }}>No family members have asked questions in this filter.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {adminQuestions.map(q => (
+                    <div key={q.id} className="card" style={{ padding: '1.25rem' }}>
+                      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                        {q.item_thumb && (
+                          <img src={q.item_thumb} alt={q.item_title} style={{ width: '70px', height: '70px', objectFit: 'cover', borderRadius: '8px', flexShrink: 0 }} />
+                        )}
+                        <div style={{ flex: 1, minWidth: '240px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                            <span style={{ fontWeight: 'bold', fontSize: '1rem', color: 'var(--pine-deep)' }}>
+                              Item: {q.item_title} {q.item_number ? `(${q.item_number})` : ''}
+                            </span>
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                              {new Date(q.created_at).toLocaleString()}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.92rem', color: '#1e293b', background: '#f8fafc', padding: '0.65rem 0.85rem', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '0.65rem' }}>
+                            <strong>{q.user_name}:</strong> "{q.question}"
+                          </div>
+
+                          {q.is_answered ? (
+                            <div style={{ background: '#e8f5e9', borderLeft: '3px solid #2e7d32', padding: '0.6rem 0.85rem', borderRadius: '4px', marginTop: '0.5rem' }}>
+                              <div style={{ fontSize: '0.78rem', fontWeight: 'bold', color: '#2e7d32', marginBottom: '2px' }}>
+                                Answered by {q.answered_by_name || 'Admin'} on {new Date(q.answered_at).toLocaleDateString()}:
+                              </div>
+                              <div style={{ fontSize: '0.88rem', color: '#1b5e20' }}>
+                                {q.answer}
+                              </div>
+                            </div>
+                          ) : (
+                            <div>
+                              {adminAnsweringQuestionId === q.id ? (
+                                <div style={{ marginTop: '0.75rem' }}>
+                                  <textarea
+                                    value={adminAnswerText}
+                                    onChange={(e) => setAdminAnswerText(e.target.value)}
+                                    placeholder="Type your official answer to the family member..."
+                                    rows={3}
+                                    style={{ width: '100%', padding: '0.65rem', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.9rem', boxSizing: 'border-box', marginBottom: '0.5rem' }}
+                                  />
+                                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <button
+                                      className="btn-green"
+                                      disabled={isSubmittingAnswer || !adminAnswerText.trim()}
+                                      onClick={() => handleAnswerQuestion(q.id)}
+                                      style={{ padding: '0.45rem 1rem', fontSize: '0.85rem', fontWeight: 'bold' }}
+                                    >
+                                      {isSubmittingAnswer ? 'Saving...' : '💾 Submit Answer'}
+                                    </button>
+                                    <button
+                                      className="btn-outline"
+                                      onClick={() => { setAdminAnsweringQuestionId(null); setAdminAnswerText(''); }}
+                                      style={{ padding: '0.45rem 0.85rem', fontSize: '0.85rem' }}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <button
+                                  className="btn-outline"
+                                  style={{ padding: '0.4rem 0.85rem', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--pine-primary)', borderColor: 'var(--pine-primary)', marginTop: '0.35rem' }}
+                                  onClick={() => {
+                                    setAdminAnsweringQuestionId(q.id);
+                                    setAdminAnswerText('');
+                                  }}
+                                >
+                                  ✍️ Reply / Answer Question
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ADMIN STORIES VIEW */}
+          {currentView === 'admin_stories' && currentUser?.role === 'admin' && (
+            <div style={{ maxWidth: '960px', margin: '0 auto', paddingBottom: '3rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div>
+                  <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.65rem', color: 'var(--pine-deep)', margin: '0 0 4px 0' }}>
+                    💬 Family Stories & Memories
+                  </h1>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>
+                    All personal memories and stories submitted by family members across Uncle Jim's estate inventory.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn-outline" onClick={fetchAdminStories}>
+                    🔄 Refresh Stories
+                  </button>
+                  <button className="btn-green" onClick={handleNavigateHome}>
+                    🏠 Return to Dashboard
+                  </button>
+                </div>
+              </div>
+
+              {isLoadingAdminQA ? (
+                <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <Loader2 className="animate-spin" size={32} style={{ margin: '0 auto 0.75rem auto' }} />
+                  <div>Loading stories...</div>
+                </div>
+              ) : adminStories.length === 0 ? (
+                <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <MessageSquare size={44} color="var(--pine-primary)" style={{ opacity: 0.4, margin: '0 auto 0.75rem auto' }} />
+                  <h3 style={{ fontSize: '1.15rem', color: 'var(--pine-deep)' }}>No stories recorded yet</h3>
+                  <p style={{ fontSize: '0.88rem' }}>When family members share memories in the item detail view, they will appear here.</p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {adminStories.map(s => (
+                    <div key={s.id} className="card" style={{ padding: '1.25rem' }}>
+                      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                        {s.item_thumb && (
+                          <img src={s.item_thumb} alt={s.item_title} style={{ width: '70px', height: '70px', objectFit: 'cover', borderRadius: '8px', flexShrink: 0 }} />
+                        )}
+                        <div style={{ flex: 1, minWidth: '240px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                            <span style={{ fontWeight: 'bold', fontSize: '1.05rem', color: 'var(--pine-deep)' }}>
+                              Item: {s.item_title} {s.item_number ? `(${s.item_number})` : ''}
+                            </span>
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                              {new Date(s.created_at).toLocaleDateString()}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.82rem', color: 'var(--pine-primary)', fontWeight: 'bold', marginBottom: '6px' }}>
+                            Contributor: {s.user_name || s.provenance_source || 'Family Member'}
+                          </div>
+                          <p style={{ fontSize: '0.92rem', color: '#2c3e35', margin: 0, lineHeight: '1.5', background: '#f8faf9', padding: '0.75rem 1rem', borderRadius: '8px', border: '1px solid var(--border-color)', whiteSpace: 'pre-line' }}>
+                            "{s.story_text}"
+                          </p>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -4210,6 +5056,113 @@ export default function App() {
                   </table>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* ADMIN FAMILY USERS & PASSWORD RESET VIEW */}
+          {currentView === 'users' && currentUser?.role === 'admin' && (
+            <div style={{ maxWidth: '1000px', margin: '0 auto', paddingBottom: '3rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div>
+                  <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)', margin: '0 0 4px 0' }}>
+                    👥 Family Members & User Accounts
+                  </h1>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>
+                    Manage family accounts, review access roles, and reset member passwords to default.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn-outline" onClick={fetchAdminUsers} disabled={isLoadingAdminUsers}>
+                    🔄 Refresh Users
+                  </button>
+                  <button className="btn-green" onClick={handleNavigateHome}>
+                    🏠 Return to Dashboard
+                  </button>
+                </div>
+              </div>
+
+              {isLoadingAdminUsers ? (
+                <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <Loader2 className="animate-spin" size={32} style={{ margin: '0 auto 0.75rem auto' }} />
+                  <div>Loading family members...</div>
+                </div>
+              ) : (
+                <div className="data-table-card">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Location</th>
+                        <th style={{ textAlign: 'right' }}>Password Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminUsersList.map(u => {
+                        const isAdmin = u.role === 'admin' || u.id === 'user_dan';
+                        return (
+                          <tr key={u.id}>
+                            <td style={{ fontWeight: 'bold', color: 'var(--pine-deep)' }}>
+                              {u.name}
+                            </td>
+                            <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                              {u.email}
+                            </td>
+                            <td>
+                              <span className={`badge-status ${isAdmin ? 'badge-assigned' : 'badge-released'}`} style={{ fontSize: '0.78rem' }}>
+                                {isAdmin ? '👑 Admin' : u.role === 'contributor' ? '📷 Photographer' : u.role === 'institution' ? '🏛️ Institution' : '👤 Family Member'}
+                              </span>
+                            </td>
+                            <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                              {u.address || '—'}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              {isAdmin ? (
+                                <span style={{ fontSize: '0.78rem', color: '#64748b', fontStyle: 'italic', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  <Lock size={13} color="#64748b" /> Protected Admin
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="btn-outline"
+                                  style={{
+                                    fontSize: '0.82rem',
+                                    fontWeight: '600',
+                                    padding: '0.35rem 0.75rem',
+                                    borderRadius: '6px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '5px',
+                                    color: 'var(--pine-deep)',
+                                    borderColor: 'var(--border-color)',
+                                    background: '#fff'
+                                  }}
+                                  onClick={() => {
+                                    setResetPasswordError(null);
+                                    setResetPasswordSuccess(null);
+                                    setUserToResetPassword(u);
+                                  }}
+                                >
+                                  <Key size={14} color="var(--pine-primary)" />
+                                  Reset Password
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {adminUsersList.length === 0 && (
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
+                            No users found.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -4486,12 +5439,15 @@ export default function App() {
                       <>
                         <option value="Furniture">Furniture</option>
                         <option value="Decor">Decor</option>
+                        <option value="Decorative Items">Decorative Items</option>
+                        <option value="Framed Photographs">Framed Photographs</option>
                         <option value="Electronics">Electronics</option>
                         <option value="Kitchen">Kitchen</option>
                         <option value="Books">Books</option>
                         <option value="Tools">Tools</option>
                         <option value="Jewelry">Jewelry</option>
                         <option value="Collectibles">Collectibles</option>
+                        <option value="Packers">Packers</option>
                         <option value="Other">Other</option>
                       </>
                     )}
@@ -4962,6 +5918,190 @@ export default function App() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+      {/* CHANGE PASSWORD MODAL (Available to any logged-in user) */}
+      {showChangePasswordModal && (
+        <div className="modal-overlay" onClick={() => !isChangingPassword && setShowChangePasswordModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '480px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <Key size={20} color="var(--pine-primary)" />
+                <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--pine-deep)' }}>
+                  Change Password
+                </h3>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                disabled={isChangingPassword}
+                onClick={() => setShowChangePasswordModal(false)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleChangePassword}>
+              <div className="modal-body" style={{ padding: '1.25rem' }}>
+                {changePasswordSuccess && (
+                  <div style={{ background: '#e8f5e9', color: '#2e7d32', border: '1px solid #c8e6c9', padding: '0.85rem 1rem', borderRadius: '8px', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 'bold' }}>
+                    <CheckCircle2 size={18} color="#2e7d32" />
+                    <span>{changePasswordSuccess}</span>
+                  </div>
+                )}
+
+                {changePasswordError && (
+                  <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', padding: '0.85rem 1rem', borderRadius: '8px', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
+                    <AlertCircle size={18} color="#991b1b" />
+                    <span>{changePasswordError}</span>
+                  </div>
+                )}
+
+                <div style={{ marginBottom: '1.1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)', marginBottom: '0.35rem' }}>
+                    Current Password
+                  </label>
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    value={currentPasswordInput}
+                    onChange={e => setCurrentPasswordInput(e.target.value)}
+                    placeholder="Enter your current password"
+                    style={{ width: '100%', minHeight: '48px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '16px', boxSizing: 'border-box' }}
+                    required
+                  />
+                </div>
+
+                <div style={{ marginBottom: '1.1rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)', marginBottom: '0.35rem' }}>
+                    New Password
+                  </label>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={newPasswordInput}
+                    onChange={e => setNewPasswordInput(e.target.value)}
+                    placeholder="Enter a new password"
+                    style={{ width: '100%', minHeight: '48px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '16px', boxSizing: 'border-box' }}
+                    required
+                  />
+                </div>
+
+                <div style={{ marginBottom: '0.5rem' }}>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)', marginBottom: '0.35rem' }}>
+                    Confirm New Password
+                  </label>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={confirmPasswordInput}
+                    onChange={e => setConfirmPasswordInput(e.target.value)}
+                    placeholder="Re-enter the new password"
+                    style={{ width: '100%', minHeight: '48px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '16px', boxSizing: 'border-box' }}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', padding: '1rem 1.25rem' }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  disabled={isChangingPassword}
+                  onClick={() => setShowChangePasswordModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-green-senior"
+                  disabled={isChangingPassword}
+                  style={{ minHeight: '44px', padding: '0 1.5rem', fontWeight: 'bold' }}
+                >
+                  {isChangingPassword ? 'Updating...' : 'Update Password'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN RESET USER PASSWORD CONFIRMATION MODAL */}
+      {userToResetPassword && (
+        <div className="modal-overlay" onClick={() => !isResettingPassword && setUserToResetPassword(null)}>
+          <div className="modal-card" style={{ maxWidth: '480px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <Key size={20} color="var(--pine-primary)" />
+                <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--pine-deep)' }}>
+                  Reset User Password
+                </h3>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                disabled={isResettingPassword}
+                onClick={() => setUserToResetPassword(null)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="modal-body" style={{ padding: '1.25rem' }}>
+              {resetPasswordSuccess ? (
+                <div style={{ background: '#e8f5e9', color: '#2e7d32', border: '1px solid #c8e6c9', padding: '1rem', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 'bold' }}>
+                  <CheckCircle2 size={20} color="#2e7d32" />
+                  <span>{resetPasswordSuccess}</span>
+                </div>
+              ) : (
+                <>
+                  <p style={{ fontSize: '1.05rem', fontWeight: '600', color: 'var(--pine-deep)', marginBottom: '0.75rem', lineHeight: '1.4' }}>
+                    Reset {userToResetPassword.name}'s password to the default password?
+                  </p>
+                  <div style={{ background: '#f8faf9', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.85rem 1rem', marginBottom: '1rem' }}>
+                    <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                      Target Account: <strong style={{ color: 'var(--text-color)' }}>{userToResetPassword.name}</strong> ({userToResetPassword.email})
+                    </div>
+                    <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>
+                      New Default Password: <strong style={{ color: 'var(--pine-primary)' }}>Lombardi</strong>
+                    </div>
+                  </div>
+                  <p style={{ fontSize: '0.86rem', color: 'var(--text-muted)', margin: 0 }}>
+                    {userToResetPassword.name} will be able to log in immediately using the default password and will have the option to change it anytime from their profile menu.
+                  </p>
+                  {resetPasswordError && (
+                    <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', padding: '0.75rem 1rem', borderRadius: '8px', marginTop: '1rem', fontSize: '0.9rem' }}>
+                      {resetPasswordError}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {!resetPasswordSuccess && (
+              <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', padding: '1rem 1.25rem' }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  disabled={isResettingPassword}
+                  onClick={() => setUserToResetPassword(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-green-senior"
+                  disabled={isResettingPassword}
+                  style={{ minHeight: '44px', padding: '0 1.25rem', fontWeight: 'bold' }}
+                  onClick={handleResetUserPassword}
+                >
+                  {isResettingPassword ? 'Resetting...' : `Reset ${userToResetPassword.name}'s Password`}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
