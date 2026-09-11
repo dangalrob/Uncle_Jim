@@ -2291,7 +2291,7 @@ export default function App() {
               <X size={18} /> Sign Out ({currentUser?.name || ''})
             </button>
             <div style={{ fontSize: '0.68rem', color: 'rgba(255,255,255,0.4)', marginTop: '0.75rem', textAlign: 'center', letterSpacing: '0.5px' }}>
-              Build: 2026-09-09 Diagnostics Recovery
+              Uncle Jim's Estate
             </div>
           </div>
         </aside>
@@ -2325,53 +2325,69 @@ export default function App() {
                 </div>
               </div>
 
-                {/* OFFLINE MODE TOGGLE SWITCH & STAGED QUEUE BANNER */}
+                {/* HEADER ACTIONS & USER PROFILE */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  {/* PERSISTENT THUMBNAIL CACHE STATUS INDICATOR */}
-                  {cacheStats.total > 0 && (
-                    <div>
-                      {!cacheStats.isComplete ? (
-                        <div
-                          style={{
-                            fontSize: '0.78rem',
-                            fontWeight: 'bold',
-                            color: '#0277bd',
-                            background: '#e1f5fe',
-                            border: '1px solid #b3e5fc',
-                            padding: '0.35rem 0.75rem',
-                            borderRadius: '20px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px'
-                          }}
-                          title={`${cacheStats.cached} of ${cacheStats.total} photos stored persistently on laptop`}
-                        >
-                          <RefreshCw size={12} style={{ animation: 'spin 1.5s linear infinite' }} />
-                          <span>Updating photos: {cacheStats.remaining || cacheStats.updating} remaining</span>
-                        </div>
-                      ) : (
-                        <div
-                          style={{
-                            fontSize: '0.75rem',
-                            color: '#2e7d32',
-                            background: '#f1f8e9',
-                            border: '1px solid #dcedc8',
-                            padding: '0.3rem 0.65rem',
-                            borderRadius: '20px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '5px',
-                            opacity: 0.85
-                          }}
-                          title="All thumbnails persistently cached in laptop IndexedDB"
-                        >
-                          <Check size={13} color="#2e7d32" />
-                          <span>Photos cached: {cacheStats.cached} / {cacheStats.total}</span>
+                  {/* ADMIN OPERATIONAL CONTROLS: Only visible in Admin role & Admin View mode */}
+                  {isAdminOperational && (
+                    <>
+                      {/* PERSISTENT THUMBNAIL CACHE STATUS INDICATOR */}
+                      {cacheStats.total > 0 && (
+                        <div>
+                          {!cacheStats.isComplete ? (
+                            <div
+                              style={{
+                                fontSize: '0.78rem',
+                                fontWeight: 'bold',
+                                color: '#0277bd',
+                                background: '#e1f5fe',
+                                border: '1px solid #b3e5fc',
+                                padding: '0.35rem 0.75rem',
+                                borderRadius: '20px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px'
+                              }}
+                              title={`${cacheStats.cached} of ${cacheStats.total} photos stored persistently on laptop`}
+                            >
+                              <RefreshCw size={12} style={{ animation: 'spin 1.5s linear infinite' }} />
+                              <span>Updating photos: {cacheStats.remaining || cacheStats.updating} remaining</span>
+                            </div>
+                          ) : (
+                            <div
+                              style={{
+                                fontSize: '0.75rem',
+                                color: '#2e7d32',
+                                background: '#f1f8e9',
+                                border: '1px solid #dcedc8',
+                                padding: '0.3rem 0.65rem',
+                                borderRadius: '20px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                                opacity: 0.85
+                              }}
+                              title="All thumbnails persistently cached in laptop IndexedDB"
+                            >
+                              <Check size={13} color="#2e7d32" />
+                              <span>Photos cached: {cacheStats.cached} / {cacheStats.total}</span>
+                            </div>
+                          )}
                         </div>
                       )}
-                    </div>
+
+                      {/* OFFLINE MODE TOGGLE BUTTON */}
+                      <button
+                        className={`btn-outline ${offlineMode ? 'btn-amber-active' : ''}`}
+                        style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                        onClick={handleToggleOfflineMode}
+                      >
+                        {offlineMode ? <WifiOff size={16} color="#d32f2f" /> : <Wifi size={16} color="#2e7d32" />}
+                        <span>{offlineMode ? 'Offline Mode: ON' : 'Offline Mode: OFF'}</span>
+                      </button>
+                    </>
                   )}
 
+                  {/* ADMIN VIEW MODE SWITCHER: Visible to Admin so they can toggle back and forth */}
                   {currentUser?.role === 'admin' && (
                     <button
                       className="btn-outline"
@@ -2393,15 +2409,6 @@ export default function App() {
                       {adminViewMode === 'admin' ? '👤 Switch to User View' : '👑 Switch to Admin View'}
                     </button>
                   )}
-
-                  <button
-                    className={`btn-outline ${offlineMode ? 'btn-amber-active' : ''}`}
-                    style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
-                    onClick={handleToggleOfflineMode}
-                  >
-                    {offlineMode ? <WifiOff size={16} color="#d32f2f" /> : <Wifi size={16} color="#2e7d32" />}
-                    <span>{offlineMode ? 'Offline Mode: ON' : 'Offline Mode: OFF'}</span>
-                  </button>
 
                 <div className="header-user-container" ref={userMenuRef}>
                   <button
@@ -2471,85 +2478,90 @@ export default function App() {
               </div>
             </header>
 
-            {/* STATUS BANNER 1: OFFLINE MODE IS ACTIVE */}
-            {offlineMode && (
-              <div style={{ background: '#fff3cd', color: '#664d03', borderBottom: '1px solid #ffecb5', padding: '0.6rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.88rem', fontWeight: 'bold', flexWrap: 'wrap', gap: '0.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <WifiOff size={18} color="#b45309" />
-                  <span>⚡ OFFLINE MODE IS ON — Photos save directly to your iPhone storage without network calls.</span>
-                </div>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <button className="btn-outline" style={{ fontSize: '0.78rem', padding: '0.25rem 0.65rem', background: '#fff' }} onClick={() => setShowDiagnosticsModal(true)}>
-                    🔍 Diagnostics ({stagedItems.length})
-                  </button>
-                  <button className="btn-outline" style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem', background: '#fff' }} onClick={handleToggleOfflineMode}>
-                    Turn OFF Offline Mode
-                  </button>
-                </div>
-              </div>
-            )}
+            {/* ADMIN OPERATIONAL STATUS BANNERS (Only rendered in Admin view) */}
+            {isAdminOperational && (
+              <>
+                {/* STATUS BANNER 1: OFFLINE MODE IS ACTIVE */}
+                {offlineMode && (
+                  <div style={{ background: '#fff3cd', color: '#664d03', borderBottom: '1px solid #ffecb5', padding: '0.6rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.88rem', fontWeight: 'bold', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <WifiOff size={18} color="#b45309" />
+                      <span>⚡ OFFLINE MODE IS ON — Photos save directly to your iPhone storage without network calls.</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <button className="btn-outline" style={{ fontSize: '0.78rem', padding: '0.25rem 0.65rem', background: '#fff' }} onClick={() => setShowDiagnosticsModal(true)}>
+                        🔍 Diagnostics ({stagedItems.length})
+                      </button>
+                      <button className="btn-outline" style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem', background: '#fff' }} onClick={handleToggleOfflineMode}>
+                        Turn OFF Offline Mode
+                      </button>
+                    </div>
+                  </div>
+                )}
 
-            {/* STATUS BANNER 2: SYNC PROGRESS / CONNECTION / ERROR */}
-            {syncProgress.message && (
-              <div style={{
-                background: syncProgress.failed > 0 ? '#fee2e2' : (syncProgress.isSyncing ? '#eff6ff' : (syncProgress.waitingForConnection ? '#fef3c7' : '#d1e7dd')),
-                color: syncProgress.failed > 0 ? '#991b1b' : (syncProgress.isSyncing ? '#1e40af' : (syncProgress.waitingForConnection ? '#92400e' : '#0f5132')),
-                borderBottom: '1px solid rgba(0,0,0,0.1)',
-                padding: '0.65rem 1.5rem',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                fontSize: '0.9rem',
-                fontWeight: 'bold',
-                flexWrap: 'wrap',
-                gap: '0.5rem'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  {syncProgress.isSyncing ? (
-                    <Loader2 className="animate-spin" size={18} />
-                  ) : syncProgress.failed > 0 ? (
-                    <AlertCircle size={18} />
-                  ) : syncProgress.waitingForConnection ? (
-                    <WifiOff size={18} />
-                  ) : (
-                    <UploadCloud size={18} />
-                  )}
-                  <span>{syncProgress.message}</span>
-                </div>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <button className="btn-outline" style={{ fontSize: '0.8rem', padding: '0.3rem 0.65rem', background: '#fff' }} onClick={() => setShowDiagnosticsModal(true)}>
-                    🔍 Diagnostics ({stagedItems.length})
-                  </button>
-                  {(syncProgress.failed > 0 || syncProgress.waitingForConnection) && !syncProgress.isSyncing && (
-                    <button className="btn-green-senior" style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }} onClick={() => setShowDiagnosticsModal(true)}>
-                      Inspect & Upload
-                    </button>
-                  )}
-                  {!syncProgress.isSyncing && (
-                    <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }} onClick={() => setSyncProgress(prev => ({ ...prev, message: null }))} title="Dismiss">
-                      <X size={16} />
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
+                {/* STATUS BANNER 2: SYNC PROGRESS / CONNECTION / ERROR */}
+                {syncProgress.message && (
+                  <div style={{
+                    background: syncProgress.failed > 0 ? '#fee2e2' : (syncProgress.isSyncing ? '#eff6ff' : (syncProgress.waitingForConnection ? '#fef3c7' : '#d1e7dd')),
+                    color: syncProgress.failed > 0 ? '#991b1b' : (syncProgress.isSyncing ? '#1e40af' : (syncProgress.waitingForConnection ? '#92400e' : '#0f5132')),
+                    borderBottom: '1px solid rgba(0,0,0,0.1)',
+                    padding: '0.65rem 1.5rem',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    fontSize: '0.9rem',
+                    fontWeight: 'bold',
+                    flexWrap: 'wrap',
+                    gap: '0.5rem'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      {syncProgress.isSyncing ? (
+                        <Loader2 className="animate-spin" size={18} />
+                      ) : syncProgress.failed > 0 ? (
+                        <AlertCircle size={18} />
+                      ) : syncProgress.waitingForConnection ? (
+                        <WifiOff size={18} />
+                      ) : (
+                        <UploadCloud size={18} />
+                      )}
+                      <span>{syncProgress.message}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <button className="btn-outline" style={{ fontSize: '0.8rem', padding: '0.3rem 0.65rem', background: '#fff' }} onClick={() => setShowDiagnosticsModal(true)}>
+                        🔍 Diagnostics ({stagedItems.length})
+                      </button>
+                      {(syncProgress.failed > 0 || syncProgress.waitingForConnection) && !syncProgress.isSyncing && (
+                        <button className="btn-green-senior" style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }} onClick={() => setShowDiagnosticsModal(true)}>
+                          Inspect & Upload
+                        </button>
+                      )}
+                      {!syncProgress.isSyncing && (
+                        <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }} onClick={() => setSyncProgress(prev => ({ ...prev, message: null }))} title="Dismiss">
+                          <X size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
-            {/* STATUS BANNER 3: STAGED ITEMS PENDING UPLOAD (IDLE) */}
-            {!offlineMode && !syncProgress.message && stagedItems.length > 0 && (
-              <div style={{ background: '#d1e7dd', color: '#0f5132', borderBottom: '1px solid #badbcc', padding: '0.65rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem', fontWeight: 'bold' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <UploadCloud size={20} />
-                  <span>📶 Wi-Fi CONNECTED — {stagedItems.length} Offline Item(s) Ready to Review & Upload.</span>
-                </div>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <button className="btn-outline" style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', background: '#fff', color: '#0f5132', borderColor: '#0f5132' }} onClick={() => setShowDiagnosticsModal(true)}>
-                    🔍 Diagnostics ({stagedItems.length})
-                  </button>
-                  <button className="btn-green-senior" style={{ fontSize: '0.85rem', padding: '0.4rem 1rem' }} onClick={() => setShowDiagnosticsModal(true)}>
-                    Review & Upload Items ({stagedItems.length})
-                  </button>
-                </div>
-              </div>
+                {/* STATUS BANNER 3: STAGED ITEMS PENDING UPLOAD (IDLE) */}
+                {!offlineMode && !syncProgress.message && stagedItems.length > 0 && (
+                  <div style={{ background: '#d1e7dd', color: '#0f5132', borderBottom: '1px solid #badbcc', padding: '0.65rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.9rem', fontWeight: 'bold' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <UploadCloud size={20} />
+                      <span>📶 Wi-Fi CONNECTED — {stagedItems.length} Offline Item(s) Ready to Review & Upload.</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button className="btn-outline" style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', background: '#fff', color: '#0f5132', borderColor: '#0f5132' }} onClick={() => setShowDiagnosticsModal(true)}>
+                        🔍 Diagnostics ({stagedItems.length})
+                      </button>
+                      <button className="btn-green-senior" style={{ fontSize: '0.85rem', padding: '0.4rem 1rem' }} onClick={() => setShowDiagnosticsModal(true)}>
+                        Review & Upload Items ({stagedItems.length})
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
