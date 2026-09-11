@@ -2159,6 +2159,9 @@ export default function App() {
 
   const releasedItems = items.filter(i => ['released', 'assigned', 'distributed', 'completed'].includes(i.status));
 
+  // Determine if Admin operational controls should be active and visible
+  const isAdminOperational = currentUser?.role === 'admin' && adminViewMode === 'admin';
+
   return (
     <div className="app-layout">
       {/* MOBILE NAVIGATION BACKDROP OVERLAY */}
