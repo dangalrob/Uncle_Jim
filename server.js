@@ -959,9 +959,9 @@ app.get('/api/items', authenticateToken, async (req, res) => {
     }
 
     if (search) {
-      query += ` AND (i.title LIKE ? OR i.description LIKE ? OR i.location_in_house LIKE ?)`;
+      query += ` AND (i.title LIKE ? OR i.description LIKE ? OR i.location_in_house LIKE ? OR i.notes LIKE ? OR i.item_number LIKE ? OR c.name LIKE ? OR i.destination LIKE ? OR i.institutional_name LIKE ?)`;
       const s = `%${search}%`;
-      params.push(s, s, s);
+      params.push(s, s, s, s, s, s, s, s);
     }
 
     query += ` ORDER BY i.created_at DESC`;
@@ -1650,10 +1650,14 @@ app.get('/api/admin/interests', authenticateToken, requireRole(['admin']), async
     const query = `
       SELECT int.*, u.name as user_name, u.email as user_email,
              i.title as item_title, i.item_number, i.status as item_status,
-             (SELECT thumbnail_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as item_thumb
+             i.description as item_description, i.destination as item_destination,
+             c.name as category_name,
+             (SELECT thumbnail_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as item_thumb,
+             (SELECT u2.name FROM assignments a JOIN users u2 ON a.recipient_user_id = u2.id WHERE a.item_id = i.id) as assigned_to_name
       FROM interests int
       JOIN users u ON int.user_id = u.id
       JOIN items i ON int.item_id = i.id
+      LEFT JOIN categories c ON i.category_id = c.id
       WHERE i.estate_id = ?
       ORDER BY i.title ASC, int.created_at ASC
     `;

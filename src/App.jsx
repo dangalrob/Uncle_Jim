@@ -199,6 +199,12 @@ export default function App() {
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [resetPasswordSuccess, setResetPasswordSuccess] = useState(null);
   const [resetPasswordError, setResetPasswordError] = useState(null);
+
+  // Admin Interest Dashboard State
+  const [adminInterests, setAdminInterests] = useState([]);
+  const [isLoadingAdminInterests, setIsLoadingAdminInterests] = useState(false);
+  const [adminInterestsSearch, setAdminInterestsSearch] = useState('');
+  const [adminInterestsUserFilter, setAdminInterestsUserFilter] = useState('all');
   
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -334,6 +340,9 @@ export default function App() {
       fetchUsers();
       fetchReviewProgress();
       fetchDashboardStats();
+      if (currentView === 'admin_interests' && currentUser.role === 'admin') {
+        fetchAdminInterests();
+      }
     }
   }, [currentUser, currentView]);
 
@@ -628,6 +637,21 @@ export default function App() {
       console.error("Failed to fetch admin users:", err);
     } finally {
       setIsLoadingAdminUsers(false);
+    }
+  };
+
+  const fetchAdminInterests = async () => {
+    setIsLoadingAdminInterests(true);
+    try {
+      const res = await fetch('/api/admin/interests');
+      if (res.ok) {
+        const data = await res.json();
+        setAdminInterests(data.interests || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch admin interests:", err);
+    } finally {
+      setIsLoadingAdminInterests(false);
     }
   };
 
@@ -2207,6 +2231,10 @@ export default function App() {
                   <Package size={18} /> Browse Inventory Catalog
                 </button>
 
+                <button className={`sidebar-item ${currentView === 'admin_interests' ? 'active' : ''}`} onClick={() => { setCurrentView('admin_interests'); fetchAdminInterests(); setMobileNavOpen(false); }}>
+                  <Heart size={18} /> Interest Dashboard
+                </button>
+
                 <button className={`sidebar-item ${currentView === 'admin_questions' ? 'active' : ''}`} onClick={() => { setCurrentView('admin_questions'); fetchAdminQuestions('all'); setMobileNavOpen(false); }}>
                   <HelpCircle size={18} /> Family Questions
                 </button>
@@ -2243,9 +2271,27 @@ export default function App() {
                   <History size={18} /> Logs
                 </button>
 
-                <button className="sidebar-item" onClick={() => { setShowDiagnosticsModal(true); setMobileNavOpen(false); }}>
-                  <Activity size={18} /> 🔍 Offline Diagnostics ({stagedItems.length})
-                </button>
+                {/* Mobile & Admin Operational Controls Section */}
+                <div style={{ margin: '0.75rem 0.5rem 0.25rem', paddingTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                  <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'rgba(255,255,255,0.5)', fontWeight: 600, padding: '0 0.5rem 0.35rem' }}>
+                    Operational & Offline
+                  </div>
+
+                  <button className="sidebar-item" onClick={() => { setShowDiagnosticsModal(true); setMobileNavOpen(false); }} title="Connection & Upload Status">
+                    {offlineMode ? <WifiOff size={18} color="#f59e0b" /> : <UploadCloud size={18} color="#10b981" />}
+                    <span>{offlineMode ? 'Offline Mode Active' : (stagedItems.length > 0 ? `Wi-Fi (${stagedItems.length} ready)` : 'Connection / Upload Status')}</span>
+                  </button>
+
+                  <button className="sidebar-item" onClick={() => { setShowDiagnosticsModal(true); setMobileNavOpen(false); }} title="Inspect staged items and diagnostics">
+                    <Activity size={18} />
+                    <span>Diagnostics ({stagedItems.length})</span>
+                  </button>
+
+                  <button className="sidebar-item" onClick={() => { setShowDiagnosticsModal(true); setMobileNavOpen(false); }} title="Review & Upload staged items">
+                    <CheckSquare size={18} color={stagedItems.length > 0 ? '#10b981' : 'inherit'} />
+                    <span>Review & Upload Items {stagedItems.length > 0 ? `(${stagedItems.length})` : ''}</span>
+                  </button>
+                </div>
               </>
             )}
 
@@ -2481,9 +2527,9 @@ export default function App() {
               </div>
             </header>
 
-            {/* ADMIN OPERATIONAL STATUS BANNERS (Only rendered in Admin view) */}
+            {/* ADMIN OPERATIONAL STATUS BANNERS (Only rendered in Admin view, hidden on mobile via CSS) */}
             {isAdminOperational && (
-              <>
+              <div className="admin-operational-banners">
                 {/* STATUS BANNER 1: OFFLINE MODE IS ACTIVE */}
                 {offlineMode && (
                   <div style={{ background: '#fff3cd', color: '#664d03', borderBottom: '1px solid #ffecb5', padding: '0.6rem 1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.88rem', fontWeight: 'bold', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -2564,7 +2610,7 @@ export default function App() {
                     </div>
                   </div>
                 )}
-              </>
+              </div>
             )}
           </div>
         )}
@@ -2798,9 +2844,19 @@ export default function App() {
                       {items.filter(i => i.status === 'released').length || dashboardStats.releasedItems || 0} item(s) currently released for family review ➔
                     </div>
                   </div>
+
+                  <div className="attention-item" style={{ cursor: 'pointer' }} onClick={() => { setCurrentView('admin_interests'); fetchAdminInterests(); }}>
+                    <div className="attention-bullet" style={{ background: '#ec4899' }}></div>
+                    <div style={{ flex: 1, fontWeight: '500' }}>
+                      ❤️ Interest Dashboard — View which family members want which items ➔
+                    </div>
+                  </div>
                 </div>
 
                 <div style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-start', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <button className="btn-outline" style={{ fontSize: '0.85rem' }} onClick={() => { setCurrentView('admin_interests'); fetchAdminInterests(); }}>
+                    ❤️ Open Interest Dashboard
+                  </button>
                   <button className="btn-outline" style={{ fontSize: '0.85rem' }} onClick={() => { setCurrentView('logs'); fetchAuditLogs(); }}>
                     📜 Open Full Audit & Activity Logs
                   </button>
@@ -3152,29 +3208,115 @@ export default function App() {
           {currentView === 'catalog' && (() => {
             const isRegularUserExperience = currentUser?.role !== 'admin' || adminViewMode === 'user';
             const displayedItems = items.filter(item => {
+              // Permission guard: Regular Users and Dan in User View only see released / assigned / distributed / completed items
               if (isRegularUserExperience && !['released', 'assigned', 'distributed', 'completed'].includes(item.status)) {
                 return false;
               }
+
+              // Filter by My Interested Items tab
               if (catalogInterestFilter === 'my_interests' && !Boolean(item.user_interested)) return false;
+
+              // Filter by Category dropdown
+              if (categoryFilter && item.category_id !== categoryFilter) return false;
+
+              // Filter by Status (e.g. from KPI buttons)
+              if (statusFilter) {
+                if (statusFilter === 'assigned') {
+                  if (!['assigned', 'completed', 'distributed'].includes(item.status)) return false;
+                } else if (item.status !== statusFilter) {
+                  return false;
+                }
+              }
+
+              // Search query: Case-insensitive, partial-match friendly across all key descriptive fields
+              if (searchQuery && searchQuery.trim()) {
+                const q = searchQuery.toLowerCase().trim();
+                const title = (item.title || '').toLowerCase();
+                const desc = (item.description || '').toLowerCase();
+                const notes = (item.notes || '').toLowerCase();
+                const catName = (item.category_name || '').toLowerCase();
+                const itemNum = (item.item_number || '').toLowerCase();
+                const dest = (item.destination || item.destination_name || '').toLowerCase();
+                const instName = (item.institutional_name || item.institutional_candidate || '').toLowerCase();
+                const loc = (item.location_in_house || '').toLowerCase();
+                const cond = (item.condition || '').toLowerCase();
+
+                const matches = (
+                  title.includes(q) ||
+                  desc.includes(q) ||
+                  notes.includes(q) ||
+                  catName.includes(q) ||
+                  itemNum.includes(q) ||
+                  dest.includes(q) ||
+                  instName.includes(q) ||
+                  loc.includes(q) ||
+                  cond.includes(q)
+                );
+
+                if (!matches) return false;
+              }
+
               return true;
             });
-            const myInterestsCount = items.filter(i => Boolean(i.user_interested)).length;
+            const myInterestsCount = items.filter(i => {
+              if (isRegularUserExperience && !['released', 'assigned', 'distributed', 'completed'].includes(i.status)) return false;
+              return Boolean(i.user_interested);
+            }).length;
 
             return (
               <div>
                 {/* Search and Filter Row */}
-                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-                  <div style={{ flex: 1, minWidth: '240px', display: 'flex', background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.4rem 0.85rem', alignItems: 'center' }}>
-                    <Search size={18} color="var(--text-muted)" style={{ marginRight: '0.5rem' }} />
-                    <input type="text" style={{ border: 'none', outline: 'none', width: '100%', fontSize: '0.9rem' }} placeholder="Search books, artwork, maritime..." value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} />
+                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ flex: '1 1 240px', minWidth: '220px', display: 'flex', background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.45rem 0.85rem', alignItems: 'center' }}>
+                    <Search size={18} color="var(--text-muted)" style={{ marginRight: '0.5rem', flexShrink: 0 }} />
+                    <input
+                      type="text"
+                      style={{ border: 'none', outline: 'none', width: '100%', fontSize: '0.9rem', background: 'transparent' }}
+                      placeholder="Search books, artwork, maritime, photographs, packers..."
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                    />
                     {searchQuery && (
-                      <button style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }} onClick={() => setSearchQuery('')} title="Clear Search">
+                      <button
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}
+                        onClick={() => setSearchQuery('')}
+                        title="Clear Search"
+                      >
                         <X size={16} />
                       </button>
                     )}
                   </div>
+
+                  {/* Category Filter Dropdown */}
+                  <div style={{ minWidth: '160px' }}>
+                    <select
+                      value={categoryFilter}
+                      onChange={e => setCategoryFilter(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '0.52rem 0.75rem',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-color)',
+                        background: '#fff',
+                        fontSize: '0.9rem',
+                        color: 'var(--text-dark)',
+                        outline: 'none',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <option value="">All Categories</option>
+                      {categories.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
                   {(searchQuery || categoryFilter || statusFilter || catalogInterestFilter !== 'all') && (
-                    <button className="btn-outline" style={{ fontSize: '0.82rem', color: '#d32f2f', borderColor: '#ffcdd2' }} onClick={() => { setSearchQuery(''); setCategoryFilter(''); setStatusFilter(''); setCatalogInterestFilter('all'); }}>
+                    <button
+                      className="btn-outline"
+                      style={{ fontSize: '0.82rem', color: '#d32f2f', borderColor: '#ffcdd2', padding: '0.45rem 0.85rem' }}
+                      onClick={() => { setSearchQuery(''); setCategoryFilter(''); setStatusFilter(''); setCatalogInterestFilter('all'); }}
+                    >
                       <X size={14} style={{ marginRight: '4px' }} /> Clear Filters
                     </button>
                   )}
@@ -5180,6 +5322,314 @@ export default function App() {
               )}
             </div>
           )}
+
+          {/* ADMIN INTEREST DASHBOARD */}
+          {currentView === 'admin_interests' && currentUser?.role === 'admin' && (() => {
+            // Group all interests by item_id
+            const groupedByItem = {};
+            adminInterests.forEach(entry => {
+              if (!groupedByItem[entry.item_id]) {
+                groupedByItem[entry.item_id] = {
+                  item_id: entry.item_id,
+                  item_title: entry.item_title,
+                  item_number: entry.item_number,
+                  item_status: entry.item_status,
+                  item_description: entry.item_description,
+                  item_destination: entry.item_destination,
+                  category_name: entry.category_name,
+                  item_thumb: entry.item_thumb,
+                  assigned_to_name: entry.assigned_to_name,
+                  interests: []
+                };
+              }
+              groupedByItem[entry.item_id].interests.push(entry);
+            });
+
+            const itemList = Object.values(groupedByItem);
+            const totalItemsWithInterest = itemList.length;
+            const totalExpressions = adminInterests.length;
+            const conflictItems = itemList.filter(it => it.interests.length > 1);
+
+            // Extract unique users who have expressed interest
+            const uniqueUsers = [];
+            const seenUserIds = new Set();
+            adminInterests.forEach(e => {
+              if (!seenUserIds.has(e.user_id)) {
+                seenUserIds.add(e.user_id);
+                uniqueUsers.push({ id: e.user_id, name: e.user_name });
+              }
+            });
+            uniqueUsers.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+            // Filter items based on search and user filter
+            const filteredItemList = itemList.filter(item => {
+              if (adminInterestsUserFilter !== 'all') {
+                const hasUser = item.interests.some(i => i.user_id === adminInterestsUserFilter);
+                if (!hasUser) return false;
+              }
+
+              if (adminInterestsSearch && adminInterestsSearch.trim()) {
+                const q = adminInterestsSearch.toLowerCase().trim();
+                const titleMatch = (item.item_title || '').toLowerCase().includes(q);
+                const catMatch = (item.category_name || '').toLowerCase().includes(q);
+                const descMatch = (item.item_description || '').toLowerCase().includes(q);
+                const userMatch = item.interests.some(i => 
+                  (i.user_name || '').toLowerCase().includes(q) || 
+                  (i.comment || '').toLowerCase().includes(q)
+                );
+                if (!titleMatch && !catMatch && !descMatch && !userMatch) return false;
+              }
+
+              return true;
+            });
+
+            return (
+              <div style={{ maxWidth: '1000px', margin: '0 auto', paddingBottom: '3rem' }}>
+                {/* Header */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                  <div>
+                    <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)', margin: '0 0 4px 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <Heart size={26} color="#e11d48" fill="#e11d48" /> Family Interest Dashboard
+                    </h1>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>
+                      Overview of family members who have marked possessions of interest and their notes.
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button className="btn-outline" onClick={fetchAdminInterests} disabled={isLoadingAdminInterests}>
+                      🔄 Refresh
+                    </button>
+                    <button className="btn-green" onClick={handleNavigateHome}>
+                      🏠 Dashboard
+                    </button>
+                  </div>
+                </div>
+
+                {/* KPI Summary Cards */}
+                <div className="kpi-grid" style={{ marginBottom: '1.5rem' }}>
+                  <div className="kpi-card" style={{ cursor: 'default' }}>
+                    <div className="kpi-num" style={{ color: 'var(--pine-primary)' }}>{totalItemsWithInterest}</div>
+                    <div className="kpi-label">Items with Interest</div>
+                    <div className="kpi-btn-hint">{totalItemsWithInterest === 1 ? '1 estate possession' : `${totalItemsWithInterest} estate possessions`}</div>
+                  </div>
+
+                  <div className="kpi-card" style={{ cursor: 'default' }}>
+                    <div className="kpi-num" style={{ color: '#0284c7' }}>{totalExpressions}</div>
+                    <div className="kpi-label">Total Expressions</div>
+                    <div className="kpi-btn-hint">Across all family members</div>
+                  </div>
+
+                  <div className="kpi-card" style={{ cursor: 'default', borderColor: conflictItems.length > 0 ? '#fde68a' : undefined, background: conflictItems.length > 0 ? '#fffbeb' : undefined }}>
+                    <div className="kpi-num" style={{ color: conflictItems.length > 0 ? '#b45309' : '#16a34a' }}>
+                      {conflictItems.length}
+                    </div>
+                    <div className="kpi-label">Multiple Interested</div>
+                    <div className="kpi-btn-hint" style={{ color: conflictItems.length > 0 ? '#b45309' : undefined }}>
+                      {conflictItems.length > 0 ? 'Requires decision / draft' : 'No conflicts'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Search & Filter Row */}
+                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ flex: '1 1 240px', minWidth: '220px', display: 'flex', background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.45rem 0.85rem', alignItems: 'center' }}>
+                    <Search size={18} color="var(--text-muted)" style={{ marginRight: '0.5rem', flexShrink: 0 }} />
+                    <input
+                      type="text"
+                      style={{ border: 'none', outline: 'none', width: '100%', fontSize: '0.9rem', background: 'transparent' }}
+                      placeholder="Filter by item title, category, person, comment..."
+                      value={adminInterestsSearch}
+                      onChange={e => setAdminInterestsSearch(e.target.value)}
+                    />
+                    {adminInterestsSearch && (
+                      <button
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center', color: 'var(--text-muted)' }}
+                        onClick={() => setAdminInterestsSearch('')}
+                        title="Clear search"
+                      >
+                        <X size={16} />
+                      </button>
+                    )}
+                  </div>
+
+                  <div style={{ minWidth: '180px' }}>
+                    <select
+                      value={adminInterestsUserFilter}
+                      onChange={e => setAdminInterestsUserFilter(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '0.52rem 0.75rem',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-color)',
+                        background: '#fff',
+                        fontSize: '0.9rem',
+                        color: 'var(--text-dark)',
+                        outline: 'none',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <option value="all">All Family Members ({uniqueUsers.length})</option>
+                      {uniqueUsers.map(u => (
+                        <option key={u.id} value={u.id}>{u.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {(adminInterestsSearch || adminInterestsUserFilter !== 'all') && (
+                    <button
+                      className="btn-outline"
+                      style={{ fontSize: '0.82rem', color: '#d32f2f', borderColor: '#ffcdd2', padding: '0.45rem 0.85rem' }}
+                      onClick={() => { setAdminInterestsSearch(''); setAdminInterestsUserFilter('all'); }}
+                    >
+                      <X size={14} style={{ marginRight: '4px' }} /> Clear Filters
+                    </button>
+                  )}
+                </div>
+
+                {/* Items List */}
+                {isLoadingAdminInterests ? (
+                  <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <Loader2 className="animate-spin" size={32} style={{ margin: '0 auto 0.75rem auto' }} />
+                    <div>Loading family interest records...</div>
+                  </div>
+                ) : filteredItemList.length === 0 ? (
+                  <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <Heart size={44} color="var(--pine-primary)" style={{ opacity: 0.3, marginBottom: '0.75rem' }} />
+                    <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.25rem', color: 'var(--pine-deep)' }}>No items found</h3>
+                    <p style={{ fontSize: '0.9rem', marginTop: '0.25rem', marginBottom: '1rem' }}>
+                      {adminInterests.length === 0
+                        ? "No family members have marked interest in any possessions yet."
+                        : "No items match your current filter criteria."}
+                    </p>
+                    {(adminInterestsSearch || adminInterestsUserFilter !== 'all') && (
+                      <button className="btn-outline" onClick={() => { setAdminInterestsSearch(''); setAdminInterestsUserFilter('all'); }}>
+                        Reset Filters
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    {filteredItemList.map(item => {
+                      const hasMultiple = item.interests.length > 1;
+                      return (
+                        <div
+                          key={item.item_id}
+                          className="card"
+                          style={{
+                            padding: '1.25rem',
+                            border: hasMultiple ? '1px solid #fde68a' : '1px solid var(--border-color)',
+                            background: '#fff'
+                          }}
+                        >
+                          <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                            {/* Thumbnail */}
+                            <div style={{ width: '80px', height: '80px', borderRadius: '8px', overflow: 'hidden', background: '#f3f4f6', flexShrink: 0, border: '1px solid var(--border-color)' }}>
+                              <img
+                                src={item.item_thumb || OFFLINE_THUMB}
+                                alt={item.item_title}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                onError={(e) => { e.target.src = OFFLINE_THUMB; }}
+                              />
+                            </div>
+
+                            {/* Item Details */}
+                            <div style={{ flex: 1, minWidth: '220px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.25rem' }}>
+                                <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.15rem', color: 'var(--pine-deep)', margin: 0 }}>
+                                  {item.item_title}
+                                </h3>
+                                {item.item_number && (
+                                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>#{item.item_number}</span>
+                                )}
+                              </div>
+
+                              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+                                {item.category_name && (
+                                  <span className="badge-category" style={{ fontSize: '0.75rem' }}>
+                                    {item.category_name}
+                                  </span>
+                                )}
+                                <span className={`badge-status ${item.item_status === 'released' ? 'badge-released' : item.item_status === 'assigned' ? 'badge-assigned' : 'badge-draft'}`} style={{ fontSize: '0.75rem' }}>
+                                  {item.item_status ? item.item_status.toUpperCase() : 'STATUS'}
+                                </span>
+                                {hasMultiple ? (
+                                  <span style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', borderRadius: '12px', padding: '0.15rem 0.55rem', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                                    ⚠️ {item.interests.length} Interested (Multiple)
+                                  </span>
+                                ) : (
+                                  <span style={{ background: '#dcfce7', color: '#166534', border: '1px solid #bbf7d0', borderRadius: '12px', padding: '0.15rem 0.55rem', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                                    ✓ 1 Interested
+                                  </span>
+                                )}
+                                {item.assigned_to_name && (
+                                  <span style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: '12px', padding: '0.15rem 0.55rem', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                                    Assigned to: {item.assigned_to_name}
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Interested Persons List */}
+                              <div style={{ background: 'var(--bg-subtle)', borderRadius: '8px', padding: '0.75rem 1rem', border: '1px solid var(--border-color)' }}>
+                                <div style={{ fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-muted)', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+                                  Interested Family Members ({item.interests.length}):
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                  {item.interests.map(intr => (
+                                    <div key={intr.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', paddingBottom: '0.4rem', borderBottom: '1px solid rgba(0,0,0,0.05)' }}>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.25rem' }}>
+                                        <div style={{ fontWeight: '600', color: 'var(--pine-deep)', fontSize: '0.92rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                          <Heart size={14} color="#e11d48" fill="#e11d48" />
+                                          <span>{intr.user_name}</span>
+                                          {intr.user_email && (
+                                            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>({intr.user_email})</span>
+                                          )}
+                                        </div>
+                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                          {intr.created_at ? new Date(intr.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}
+                                        </div>
+                                      </div>
+                                      {intr.comment && (
+                                        <div style={{ fontSize: '0.85rem', color: '#374151', fontStyle: 'italic', paddingLeft: '1.4rem', marginTop: '0.15rem' }}>
+                                          "{intr.comment}"
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Action links */}
+                              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                                <button
+                                  className="btn-outline"
+                                  style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }}
+                                  onClick={() => {
+                                    setSearchQuery(item.item_title);
+                                    setCurrentView('catalog');
+                                  }}
+                                >
+                                  📦 View in Catalog
+                                </button>
+                                <button
+                                  className="btn-green"
+                                  style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }}
+                                  onClick={() => {
+                                    setCurrentView('assignments');
+                                  }}
+                                >
+                                  🎯 Manage in Assignments →
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 

@@ -1649,4 +1649,12 @@ body {
   }
 }
 
+/* Mobile Admin: Hide top operational banners on mobile so screen space is reclaimed */
+@media (max-width: 768px) {
+  .admin-operational-banners {
+    display: none !important;
+  }
+}
+
+
 
