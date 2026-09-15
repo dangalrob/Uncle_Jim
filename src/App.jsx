@@ -3893,7 +3893,7 @@ export default function App() {
                     <textarea
                       value={newStoryText}
                       onChange={(e) => setNewStoryText(e.target.value)}
-                      placeholder="Type a memory, story, or where you remember this being in Uncle Jim's home..."
+                      placeholder="Share a memory, story, or recollection about this item or where it was in Uncle Jim's home..."
                       rows={3}
                       style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '0.92rem', boxSizing: 'border-box', marginBottom: '0.75rem', outline: 'none' }}
                       required
@@ -3904,7 +3904,7 @@ export default function App() {
                       disabled={isSubmittingStory || !newStoryText.trim()}
                       style={{ padding: '0.55rem 1.25rem', fontSize: '0.9rem', fontWeight: 'bold', cursor: 'pointer' }}
                     >
-                      {isSubmittingStory ? 'Saving...' : '💬 Share Story'}
+                      {isSubmittingStory ? 'Saving...' : '💬 Share a Story or Memory'}
                     </button>
                   </form>
                 </div>

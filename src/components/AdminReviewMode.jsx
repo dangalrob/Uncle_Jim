@@ -1733,12 +1733,12 @@ function DrillDownModal({
           {/* SECTION 5: FAMILY STORY / HISTORY */}
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '1rem' }}>
             <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '0.9rem', color: 'var(--pine-deep)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              5. Family Story & Provenance
+              5. Family Story, Memory & Provenance
             </h4>
             <textarea
               value={formData.story}
               onChange={(e) => handleChange('story', e.target.value)}
-              placeholder="Family memories, stories Uncle Jim told, original purchase context..."
+              placeholder="Family memories, recollections, stories Uncle Jim told, or original acquisition context..."
               rows={6}
               style={{
                 width: '100%',

@@ -190,6 +190,121 @@ async function initDatabase() {
     db.run(`ALTER TABLE item_stories ADD COLUMN user_id TEXT`, () => {});
     db.run(`ALTER TABLE item_stories ADD COLUMN user_name TEXT`, () => {});
 
+    // ----------------------------------------------------
+    // PHASE 1 SCHEMA EXPANSION: AI Assessment, Provenance, Valuation, Snapshots
+    // ----------------------------------------------------
+    // 1. Items Table Additions
+    db.run(`ALTER TABLE items ADD COLUMN origin TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN materials TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN maker TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN identifying_marks TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN provenance_text TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN estimated_value_low REAL`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN estimated_value_high REAL`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN distribution_value REAL`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN counts_against_distribution INTEGER DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN value_basis TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN assessment_confidence TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN confidence_reason TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN appraisal_recommended INTEGER DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN appraisal_reason TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN assessment_date DATETIME`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN assessment_status TEXT DEFAULT 'not_started'`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN normalization_status TEXT DEFAULT 'not_reviewed'`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN legacy_assessment_notes TEXT`, () => {});
+
+    // 2. Estates Table Additions (Configurable distribution threshold)
+    db.run(`ALTER TABLE estates ADD COLUMN distribution_threshold_value REAL DEFAULT 100.0`, () => {});
+
+    // 3. Item Stories Additions (Museum Curation Flags)
+    db.run(`ALTER TABLE item_stories ADD COLUMN is_curated_for_museum INTEGER DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE item_stories ADD COLUMN curator_notes TEXT`, () => {});
+
+    // 4. Item Photos Additions (Museum Presentation Flags)
+    db.run(`ALTER TABLE item_photos ADD COLUMN is_featured_for_museum INTEGER DEFAULT 0`, () => {});
+    db.run(`ALTER TABLE item_photos ADD COLUMN curator_caption TEXT`, () => {});
+
+    // 5. New Table: Immutable Legacy Snapshots
+    db.run(`CREATE TABLE IF NOT EXISTS item_legacy_snapshots (
+      id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      original_title TEXT,
+      original_description TEXT,
+      original_special_handling_notes TEXT,
+      original_value TEXT,
+      original_provenance TEXT,
+      original_era TEXT,
+      snapshot_type TEXT NOT NULL DEFAULT 'PRE_NORMALIZATION_BASELINE',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_by_user_id TEXT,
+      FOREIGN KEY (item_id) REFERENCES items(id)
+    )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_legacy_snapshots_item ON item_legacy_snapshots(item_id)`);
+
+    // 6. New Table: Assessment History
+    db.run(`CREATE TABLE IF NOT EXISTS assessment_history (
+      id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      assessment_type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'APPROVED',
+      created_by_user_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      approved_by_user_id TEXT,
+      approved_at DATETIME,
+      superseded_by_id TEXT,
+      estimated_value_low REAL,
+      estimated_value_high REAL,
+      distribution_value REAL,
+      counts_against_distribution INTEGER DEFAULT 0,
+      value_basis TEXT,
+      confidence_level TEXT,
+      confidence_reason TEXT,
+      appraisal_recommended INTEGER DEFAULT 0,
+      appraisal_reason TEXT,
+      assessment_notes TEXT,
+      payload_json TEXT,
+      FOREIGN KEY (item_id) REFERENCES items(id)
+    )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_assessment_history_item ON assessment_history(item_id)`);
+
+    // 7. New Table: Research Sources (Associated with specific assessment and item)
+    db.run(`CREATE TABLE IF NOT EXISTS item_research_sources (
+      id TEXT PRIMARY KEY,
+      assessment_id TEXT,
+      item_id TEXT NOT NULL,
+      source_name TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'REFERENCE_SOURCE',
+      title TEXT,
+      price REAL,
+      sale_date TEXT,
+      url TEXT,
+      relevance_notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (assessment_id) REFERENCES assessment_history(id),
+      FOREIGN KEY (item_id) REFERENCES items(id)
+    )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_research_sources_item ON item_research_sources(item_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_research_sources_assessment ON item_research_sources(assessment_id)`);
+
+    // 8. New Table: Travel & Voyage Connections (Distinguishes proven vs possible travel overlap)
+    db.run(`CREATE TABLE IF NOT EXISTS item_travel_connections (
+      id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      voyage_name TEXT,
+      destination_or_port TEXT,
+      period_start TEXT,
+      period_end TEXT,
+      connection_type TEXT NOT NULL DEFAULT 'PLAUSIBLE_OVERLAP',
+      certainty_level TEXT NOT NULL DEFAULT 'SPECULATIVE_OVERLAP',
+      evidence_text TEXT NOT NULL,
+      notes TEXT,
+      is_curated_for_museum INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_by_user_id TEXT,
+      FOREIGN KEY (item_id) REFERENCES items(id)
+    )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_travel_connections_item ON item_travel_connections(item_id)`);
+
     db.run(`CREATE TABLE IF NOT EXISTS item_questions (
       id TEXT PRIMARY KEY,
       item_id TEXT NOT NULL,
@@ -1528,6 +1643,122 @@ app.post('/api/items/:id/stories', authenticateToken, async (req, res) => {
   }
 });
 
+// Phase 1 Endpoint: Admin Curate Story for Museum
+app.patch('/api/admin/stories/:id/curate', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { isCurated, curatorNotes } = req.body;
+    await dbRun(
+      `UPDATE item_stories SET is_curated_for_museum = ?, curator_notes = ? WHERE id = ?`,
+      [isCurated ? 1 : 0, curatorNotes || null, req.params.id]
+    );
+    res.json({ success: true, isCurated: !!isCurated });
+  } catch (err) {
+    console.error("Failed to update story curation:", err);
+    res.status(500).json({ error: "Failed to update story curation" });
+  }
+});
+
+// Phase 1 Endpoint: Admin Curate Photo for Museum
+app.patch('/api/admin/photos/:id/curate', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { isFeatured, curatorCaption } = req.body;
+    await dbRun(
+      `UPDATE item_photos SET is_featured_for_museum = ?, curator_caption = ? WHERE id = ?`,
+      [isFeatured ? 1 : 0, curatorCaption || null, req.params.id]
+    );
+    res.json({ success: true, isFeatured: !!isFeatured });
+  } catch (err) {
+    console.error("Failed to update photo curation:", err);
+    res.status(500).json({ error: "Failed to update photo curation" });
+  }
+});
+
+// Phase 1 Endpoint: Get Item Legacy Snapshots
+app.get('/api/items/:id/snapshots', authenticateToken, async (req, res) => {
+  try {
+    const snapshots = await dbAll(
+      `SELECT * FROM item_legacy_snapshots WHERE item_id = ? ORDER BY created_at DESC`,
+      [req.params.id]
+    );
+    res.json(snapshots || []);
+  } catch (err) {
+    console.error("Failed to fetch snapshots:", err);
+    res.status(500).json({ error: "Failed to fetch snapshots" });
+  }
+});
+
+// Phase 1 Endpoint: Get Item Assessment History
+app.get('/api/items/:id/assessment-history', authenticateToken, async (req, res) => {
+  try {
+    const history = await dbAll(
+      `SELECT h.*, u.name as approved_by_name 
+       FROM assessment_history h
+       LEFT JOIN users u ON h.approved_by_user_id = u.id
+       WHERE h.item_id = ? 
+       ORDER BY h.created_at DESC`,
+      [req.params.id]
+    );
+    res.json(history || []);
+  } catch (err) {
+    console.error("Failed to fetch assessment history:", err);
+    res.status(500).json({ error: "Failed to fetch assessment history" });
+  }
+});
+
+// Phase 1 Endpoint: Get Item Travel Connections
+app.get('/api/items/:id/travel-connections', authenticateToken, async (req, res) => {
+  try {
+    const connections = await dbAll(
+      `SELECT * FROM item_travel_connections WHERE item_id = ? ORDER BY created_at DESC`,
+      [req.params.id]
+    );
+    res.json(connections || []);
+  } catch (err) {
+    console.error("Failed to fetch travel connections:", err);
+    res.status(500).json({ error: "Failed to fetch travel connections" });
+  }
+});
+
+// Phase 1 Endpoint: Get Estate Distribution Settings
+app.get('/api/estate/distribution-settings', authenticateToken, async (req, res) => {
+  try {
+    const estate = await dbGet(`SELECT id, distribution_threshold_value FROM estates WHERE id = ?`, [req.user.estate_id]);
+    res.json({
+      thresholdValue: (estate && estate.distribution_threshold_value != null) ? estate.distribution_threshold_value : 100.0
+    });
+  } catch (err) {
+    console.error("Failed to fetch distribution settings:", err);
+    res.status(500).json({ error: "Failed to fetch distribution settings" });
+  }
+});
+
+// Phase 1 Endpoint: Admin Update Estate Distribution Settings
+app.patch('/api/admin/estate/distribution-settings', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { thresholdValue } = req.body;
+    const parsed = parseFloat(thresholdValue);
+    if (isNaN(parsed) || parsed < 0) {
+      return res.status(400).json({ error: "Threshold value must be a non-negative number" });
+    }
+    await dbRun(
+      `UPDATE estates SET distribution_threshold_value = ? WHERE id = ?`,
+      [parsed, req.user.estate_id]
+    );
+    await logAudit(
+      req.user.estate_id,
+      req.user.id,
+      'UPDATE_DISTRIBUTION_THRESHOLD',
+      'estates',
+      req.user.estate_id,
+      { newThreshold: parsed }
+    );
+    res.json({ success: true, thresholdValue: parsed });
+  } catch (err) {
+    console.error("Failed to update distribution threshold:", err);
+    res.status(500).json({ error: "Failed to update distribution threshold" });
+  }
+});
+
 // Submit a question for an item
 app.post('/api/items/:id/questions', authenticateToken, async (req, res) => {
   try {
@@ -2336,7 +2567,11 @@ app.post('/api/admin/database/backup', authenticateToken, requireRole(['admin'])
       'fulfillments',
       'audit_logs',
       'draft_order',
-      'draft_picks'
+      'draft_picks',
+      'item_legacy_snapshots',
+      'assessment_history',
+      'item_research_sources',
+      'item_travel_connections'
     ];
 
     const comparison = {};
