@@ -6,3 +6,5 @@ dist
 uploads/*
 !uploads/.gitkeep
 scratch/
+backups/*
+!backups/.gitkeep

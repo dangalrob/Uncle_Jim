@@ -6,7 +6,7 @@ import {
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
   Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff,
   Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign, Crop,
-  LogOut, Activity, MessageSquare, MessageCircle, Key
+  LogOut, Activity, MessageSquare, MessageCircle, Key, Database, Download, ShieldCheck
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import { thumbnailCache } from './services/thumbnailCache';
@@ -205,6 +205,13 @@ export default function App() {
   const [isLoadingAdminInterests, setIsLoadingAdminInterests] = useState(false);
   const [adminInterestsSearch, setAdminInterestsSearch] = useState('');
   const [adminInterestsUserFilter, setAdminInterestsUserFilter] = useState('all');
+
+  // Database Backup State
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupResult, setBackupResult] = useState(null);
+  const [backupError, setBackupError] = useState(null);
+  const [backupList, setBackupList] = useState([]);
+  const [backupListLoading, setBackupListLoading] = useState(false);
   
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -266,6 +273,71 @@ export default function App() {
       console.error("Failed to load audit logs:", err);
     } finally {
       setIsLoadingLogs(false);
+    }
+  };
+
+  const fetchDatabaseBackups = async () => {
+    setBackupListLoading(true);
+    try {
+      const res = await fetch('/api/admin/database/backups');
+      if (res.ok) {
+        const data = await res.json();
+        setBackupList(data || []);
+      }
+    } catch (err) {
+      console.error('Failed to load database backups:', err);
+    } finally {
+      setBackupListLoading(false);
+    }
+  };
+
+  const handleCreateDatabaseBackup = async () => {
+    setBackupLoading(true);
+    setBackupError(null);
+    try {
+      const res = await fetch('/api/admin/database/backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to create database backup');
+      }
+      setBackupResult(data);
+      fetchDatabaseBackups();
+    } catch (err) {
+      console.error('Database backup error:', err);
+      setBackupError(err.message);
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const handleDownloadBackup = (filename) => {
+    window.location.href = `/api/admin/database/backup/${encodeURIComponent(filename)}/download`;
+  };
+
+  const handleDeleteBackup = async (filename, isPreAiBaseline) => {
+    const confirmMsg = isPreAiBaseline
+      ? `WARNING: "${filename}" is a protected Pre-AI baseline backup. Are you sure you want to permanently delete it?`
+      : `Are you sure you want to permanently delete backup "${filename}"?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const res = await fetch(`/api/admin/database/backups/${encodeURIComponent(filename)}${isPreAiBaseline ? '?confirm=true' : ''}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Failed to delete backup');
+        return;
+      }
+      fetchDatabaseBackups();
+      if (backupResult && backupResult.filename === filename) {
+        setBackupResult(null);
+      }
+    } catch (err) {
+      alert('Error deleting backup: ' + err.message);
     }
   };
 
@@ -2269,6 +2341,10 @@ export default function App() {
 
                 <button className={`sidebar-item ${currentView === 'logs' ? 'active' : ''}`} onClick={() => { setCurrentView('logs'); fetchAuditLogs(); setMobileNavOpen(false); }}>
                   <History size={18} /> Logs
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'data_backup' ? 'active' : ''}`} onClick={() => { setCurrentView('data_backup'); fetchDatabaseBackups(); setMobileNavOpen(false); }}>
+                  <Database size={18} /> Data & Backup
                 </button>
 
                 {/* Mobile & Admin Operational Controls Section */}
@@ -5212,6 +5288,273 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* ADMIN DATA & DATABASE BACKUP VIEW */}
+          {currentView === 'data_backup' && currentUser?.role === 'admin' && (
+            <div style={{ maxWidth: '1000px', margin: '0 auto', paddingBottom: '3rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div>
+                  <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)', margin: '0 0 4px 0' }}>
+                    💾 Estate Data & Backup Management
+                  </h1>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>
+                    Create transactionally consistent, verified backups of the live production SQLite database.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn-outline" onClick={fetchDatabaseBackups} disabled={backupListLoading}>
+                    🔄 Refresh List
+                  </button>
+                  <button className="btn-green" onClick={handleNavigateHome}>
+                    🏠 Return to Dashboard
+                  </button>
+                </div>
+              </div>
+
+              {/* ACTION CARD: CREATE BACKUP */}
+              <div className="card" style={{ padding: '1.5rem', marginBottom: '1.5rem', background: '#fff', borderRadius: '12px', border: '1px solid var(--border-color)', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+                  <div style={{ flex: 1, minWidth: '280px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                      <Database size={22} color="var(--pine-primary)" />
+                      <h3 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--pine-deep)', fontFamily: 'var(--font-heading)' }}>
+                        Live Production Database Backup
+                      </h3>
+                    </div>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', lineHeight: '1.5', margin: 0 }}>
+                      Uses SQLite's online safe backup mechanism (<code>VACUUM INTO</code>) against the resolved database path.
+                      Upon creation, an automated <code>PRAGMA integrity_check</code> and full table record count comparison are performed before the backup is verified.
+                    </p>
+                  </div>
+                  <div>
+                    <button
+                      className="btn-green"
+                      style={{ padding: '0.75rem 1.4rem', fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                      onClick={handleCreateDatabaseBackup}
+                      disabled={backupLoading}
+                    >
+                      {backupLoading ? (
+                        <>
+                          <Loader2 size={18} style={{ animation: 'spin 1.2s linear infinite' }} />
+                          <span>Creating & Verifying Backup...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck size={18} />
+                          <span>Create Database Backup</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {backupError && (
+                  <div style={{ marginTop: '1rem', padding: '0.85rem 1rem', background: '#fee2e2', border: '1px solid #fca5a5', borderRadius: '8px', color: '#b91c1c', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <AlertCircle size={18} />
+                    <span><strong>Backup Error:</strong> {backupError}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* VERIFICATION CONFIRMATION CARD (Pre-AI Production Database Baseline) */}
+              {backupResult && (
+                <div className="card" style={{ padding: '1.75rem', marginBottom: '1.5rem', background: '#f0fdf4', border: '2px solid #86efac', borderRadius: '12px', boxShadow: '0 4px 12px rgba(22, 101, 52, 0.08)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem', borderBottom: '1px solid #bbf7d0', paddingBottom: '1rem', marginBottom: '1.25rem' }}>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', background: '#15803d', color: '#fff', padding: '2px 8px', borderRadius: '4px' }}>
+                          Production Baseline
+                        </span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '12px', fontSize: '0.78rem', fontWeight: 700, border: '1px solid #86efac' }}>
+                          <CheckCircle2 size={14} color="#166534" /> VERIFIED
+                        </span>
+                      </div>
+                      <h2 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.35rem', color: '#14532d', margin: '4px 0' }}>
+                        Pre-AI Production Database Baseline
+                      </h2>
+                      <div style={{ fontSize: '0.88rem', color: '#166534', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        {backupResult.filename}
+                      </div>
+                    </div>
+
+                    <button
+                      className="btn-green"
+                      style={{ padding: '0.75rem 1.3rem', fontSize: '0.92rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#166534', boxShadow: '0 2px 6px rgba(22, 101, 52, 0.25)' }}
+                      onClick={() => handleDownloadBackup(backupResult.filename)}
+                    >
+                      <Download size={18} />
+                      <span>Download Backup (.db)</span>
+                    </button>
+                  </div>
+
+                  {/* METRICS & VERIFICATION SUMMARY */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+                    <div style={{ background: '#ffffff', padding: '0.85rem 1rem', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#166534', fontWeight: 600, textTransform: 'uppercase' }}>Status</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#15803d', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
+                        <Check size={18} strokeWidth={3} /> VERIFIED
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#ffffff', padding: '0.85rem 1rem', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#166534', fontWeight: 600, textTransform: 'uppercase' }}>Integrity Check</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#15803d', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
+                        <Check size={18} strokeWidth={3} /> OK
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#ffffff', padding: '0.85rem 1rem', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#166534', fontWeight: 600, textTransform: 'uppercase' }}>File Size</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#14532d', marginTop: '2px' }}>
+                        {backupResult.fileSizeFormatted}
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#ffffff', padding: '0.85rem 1rem', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#166534', fontWeight: 600, textTransform: 'uppercase' }}>Created At</div>
+                      <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#14532d', marginTop: '4px' }}>
+                        {new Date(backupResult.createdAt).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* LIVE VS BACKUP COMPARISON TABLE */}
+                  <div style={{ background: '#ffffff', borderRadius: '8px', border: '1px solid #bbf7d0', overflow: 'hidden' }}>
+                    <div style={{ padding: '0.75rem 1rem', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#334155' }}>
+                        Record Count Comparison (Live vs. Backup)
+                      </span>
+                      <span style={{ fontSize: '0.78rem', color: '#15803d', fontWeight: 600 }}>
+                        All {Object.keys(backupResult.comparison || {}).length} tables matched 100%
+                      </span>
+                    </div>
+
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.86rem' }}>
+                        <thead>
+                          <tr style={{ background: '#f1f5f9', borderBottom: '1px solid #e2e8f0', textAlign: 'left' }}>
+                            <th style={{ padding: '0.6rem 1rem', fontWeight: 600, color: '#475569' }}>Table / Entity</th>
+                            <th style={{ padding: '0.6rem 1rem', fontWeight: 600, color: '#475569', textAlign: 'center' }}>Live DB</th>
+                            <th style={{ padding: '0.6rem 1rem', fontWeight: 600, color: '#475569', textAlign: 'center' }}>Backup DB</th>
+                            <th style={{ padding: '0.6rem 1rem', fontWeight: 600, color: '#475569', textAlign: 'center' }}>Verification</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(backupResult.comparison || {}).map(([table, counts]) => (
+                            <tr key={table} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                              <td style={{ padding: '0.6rem 1rem', fontWeight: 500, color: '#1e293b' }}>
+                                <code>{table}</code>
+                              </td>
+                              <td style={{ padding: '0.6rem 1rem', textAlign: 'center', color: '#334155', fontWeight: 600 }}>
+                                {counts.live}
+                              </td>
+                              <td style={{ padding: '0.6rem 1rem', textAlign: 'center', color: '#334155', fontWeight: 600 }}>
+                                {counts.backup}
+                              </td>
+                              <td style={{ padding: '0.6rem 1rem', textAlign: 'center' }}>
+                                {counts.match ? (
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', color: '#15803d', fontWeight: 600, fontSize: '0.8rem' }}>
+                                    <Check size={14} strokeWidth={3} /> Matched
+                                  </span>
+                                ) : (
+                                  <span style={{ color: '#b91c1c', fontWeight: 600 }}>Mismatch</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* EXISTING BACKUPS TABLE */}
+              <div className="card" style={{ padding: '1.5rem', background: '#fff', borderRadius: '12px', border: '1px solid var(--border-color)', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--pine-deep)', fontFamily: 'var(--font-heading)' }}>
+                    Saved Backups on Server
+                  </h3>
+                  <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    {backupList.length} backup file(s) available
+                  </span>
+                </div>
+
+                {backupListLoading && (
+                  <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <Loader2 size={24} style={{ animation: 'spin 1.2s linear infinite', margin: '0 auto 0.5rem' }} />
+                    <div>Loading server backups...</div>
+                  </div>
+                )}
+
+                {!backupListLoading && backupList.length === 0 && (
+                  <div style={{ padding: '2.5rem 1rem', textAlign: 'center', color: 'var(--text-muted)', background: '#fafafa', borderRadius: '8px', border: '1px dashed #e2e8f0' }}>
+                    <Database size={32} color="var(--pine-primary)" style={{ opacity: 0.4, marginBottom: '0.5rem' }} />
+                    <div>No database backups created yet on the server.</div>
+                    <div style={{ fontSize: '0.82rem', marginTop: '4px' }}>Click "Create Database Backup" above to generate your first verified baseline.</div>
+                  </div>
+                )}
+
+                {!backupListLoading && backupList.length > 0 && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.86rem' }}>
+                      <thead>
+                        <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', textAlign: 'left' }}>
+                          <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#475569' }}>Filename</th>
+                          <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#475569' }}>Created</th>
+                          <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#475569' }}>Size</th>
+                          <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#475569', textAlign: 'right' }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {backupList.map(b => (
+                          <tr key={b.filename} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '0.75rem 1rem', fontFamily: 'monospace', fontWeight: 500, color: '#1e293b' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <Database size={15} color="var(--pine-primary)" />
+                                <span>{b.filename}</span>
+                                {b.isPreAiBaseline && (
+                                  <span style={{ fontSize: '0.68rem', background: '#dcfce7', color: '#166534', padding: '1px 6px', borderRadius: '10px', fontWeight: 700, border: '1px solid #86efac' }}>
+                                    BASELINE
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td style={{ padding: '0.75rem 1rem', color: 'var(--text-muted)' }}>
+                              {new Date(b.createdAt).toLocaleString()}
+                            </td>
+                            <td style={{ padding: '0.75rem 1rem', fontWeight: 500, color: '#334155' }}>
+                              {b.sizeFormatted}
+                            </td>
+                            <td style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>
+                              <div style={{ display: 'inline-flex', gap: '0.5rem' }}>
+                                <button
+                                  className="btn-outline"
+                                  style={{ padding: '0.35rem 0.65rem', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                  onClick={() => handleDownloadBackup(b.filename)}
+                                  title="Download .db to laptop"
+                                >
+                                  <Download size={13} /> Download
+                                </button>
+                                <button
+                                  className="btn-outline"
+                                  style={{ padding: '0.35rem 0.65rem', fontSize: '0.8rem', color: '#b91c1c', borderColor: '#fca5a5', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                                  onClick={() => handleDeleteBackup(b.filename, b.isPreAiBaseline)}
+                                  title="Delete backup"
+                                >
+                                  <Trash2 size={13} /> Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </div>
           )}

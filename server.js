@@ -32,8 +32,9 @@ const DATA_DIR = path.join(STORAGE_ROOT, 'data');
 const UPLOADS_DIR = path.join(STORAGE_ROOT, 'uploads');
 const FULL_UPLOADS_DIR = path.join(UPLOADS_DIR, 'full');
 const THUMB_UPLOADS_DIR = path.join(UPLOADS_DIR, 'thumbs');
+const BACKUPS_DIR = path.join(STORAGE_ROOT, 'backups');
 
-[DATA_DIR, UPLOADS_DIR, FULL_UPLOADS_DIR, THUMB_UPLOADS_DIR].forEach(dir => {
+[DATA_DIR, UPLOADS_DIR, FULL_UPLOADS_DIR, THUMB_UPLOADS_DIR, BACKUPS_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -2280,6 +2281,231 @@ app.get('/api/admin/dashboard-stats', authenticateToken, requireRole(['admin']),
   } catch (err) {
     console.error("Dashboard stats error:", err);
     res.status(500).json({ error: "Failed to fetch dashboard stats" });
+  }
+});
+
+// Endpoint: Admin Create Database Backup (Safe online SQLite backup using VACUUM INTO)
+app.post('/api/admin/database/backup', authenticateToken, requireRole(['admin']), async (req, res) => {
+  let backupFilePath = null;
+  let backupDb = null;
+  try {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+    let filename = `estate_backup_pre_ai_${stamp}.db`;
+    backupFilePath = path.join(BACKUPS_DIR, filename);
+
+    if (fs.existsSync(backupFilePath)) {
+      filename = `estate_backup_pre_ai_${stamp}${pad(now.getSeconds())}.db`;
+      backupFilePath = path.join(BACKUPS_DIR, filename);
+    }
+
+    // 1. Transactionally consistent SQLite online backup using VACUUM INTO
+    await new Promise((resolve, reject) => {
+      db.run('VACUUM INTO ?', [backupFilePath], function(err) {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    // 2. Open the completed backup database for verification
+    backupDb = new sqlite3.Database(backupFilePath, sqlite3.OPEN_READONLY);
+
+    // 3. Run PRAGMA integrity_check on the backup
+    const integrityRow = await new Promise((resolve, reject) => {
+      backupDb.get('PRAGMA integrity_check', (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+
+    const integrityOk = integrityRow && (integrityRow.integrity_check === 'ok');
+    if (!integrityOk) {
+      throw new Error(`Integrity check failed: ${integrityRow ? integrityRow.integrity_check : 'unknown'}`);
+    }
+
+    // 4. Compare key record counts between live DB and backup DB
+    const tablesToCompare = [
+      'items',
+      'users',
+      'item_photos',
+      'item_stories',
+      'item_questions',
+      'interests',
+      'assignments',
+      'fulfillments',
+      'audit_logs',
+      'draft_order',
+      'draft_picks'
+    ];
+
+    const comparison = {};
+    let allMatched = true;
+
+    for (const table of tablesToCompare) {
+      const liveTableCheck = await dbGet(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, [table]);
+      if (!liveTableCheck) continue;
+
+      const liveCountRow = await dbGet(`SELECT COUNT(*) as count FROM ${table}`);
+      const backupCountRow = await new Promise((resolve, reject) => {
+        backupDb.get(`SELECT COUNT(*) as count FROM ${table}`, (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+
+      const liveCount = liveCountRow ? liveCountRow.count : 0;
+      const backupCount = backupCountRow ? backupCountRow.count : 0;
+      const match = (liveCount === backupCount);
+      if (!match) allMatched = false;
+
+      comparison[table] = {
+        live: liveCount,
+        backup: backupCount,
+        match
+      };
+    }
+
+    // Close backupDb handle before reading file stats or returning
+    await new Promise((resolve) => backupDb.close(() => { backupDb = null; resolve(); }));
+
+    if (!allMatched) {
+      if (fs.existsSync(backupFilePath)) {
+        fs.unlinkSync(backupFilePath);
+      }
+      return res.status(500).json({
+        error: 'Backup verification failed: Record counts between live database and backup copy do not match.',
+        comparison
+      });
+    }
+
+    // 5. Gather file stats
+    const stats = fs.statSync(backupFilePath);
+    const fileSizeBytes = stats.size;
+    const fileSizeFormatted = fileSizeBytes > 1024 * 1024 
+      ? (fileSizeBytes / (1024 * 1024)).toFixed(2) + ' MB'
+      : (fileSizeBytes / 1024).toFixed(1) + ' KB';
+
+    // 6. Log audit event
+    await logAudit(
+      req.user.estate_id,
+      req.user.id,
+      'CREATE_DATABASE_BACKUP',
+      'database_backup',
+      filename,
+      {
+        filename,
+        fileSizeBytes,
+        status: 'VERIFIED',
+        message: `${req.user.name} created verified production database backup ${filename}`
+      }
+    );
+
+    res.json({
+      success: true,
+      filename,
+      status: 'VERIFIED',
+      integrityCheck: 'OK',
+      createdAt: stats.mtime.toISOString(),
+      fileSizeBytes,
+      fileSizeFormatted,
+      comparison,
+      allMatched: true
+    });
+  } catch (err) {
+    if (backupDb) {
+      try { backupDb.close(); } catch (_) {}
+    }
+    if (backupFilePath && fs.existsSync(backupFilePath)) {
+      try { fs.unlinkSync(backupFilePath); } catch (_) {}
+    }
+    console.error('Database backup error:', err);
+    res.status(500).json({ error: `Failed to create database backup: ${err.message}` });
+  }
+});
+
+// Endpoint: Admin List Database Backups
+app.get('/api/admin/database/backups', authenticateToken, requireRole(['admin']), (req, res) => {
+  try {
+    if (!fs.existsSync(BACKUPS_DIR)) {
+      return res.json([]);
+    }
+    const files = fs.readdirSync(BACKUPS_DIR)
+      .filter(f => /^estate_backup_.*\.db$/.test(f))
+      .map(filename => {
+        const filePath = path.join(BACKUPS_DIR, filename);
+        const stats = fs.statSync(filePath);
+        return {
+          filename,
+          sizeBytes: stats.size,
+          sizeFormatted: stats.size > 1024 * 1024 
+            ? (stats.size / (1024 * 1024)).toFixed(2) + ' MB'
+            : (stats.size / 1024).toFixed(1) + ' KB',
+          createdAt: stats.mtime.toISOString(),
+          isPreAiBaseline: filename.includes('pre_ai')
+        };
+      })
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json(files);
+  } catch (err) {
+    console.error('List backups error:', err);
+    res.status(500).json({ error: 'Failed to list database backups' });
+  }
+});
+
+// Endpoint: Admin Download Database Backup
+app.get('/api/admin/database/backup/:filename/download', authenticateToken, requireRole(['admin']), (req, res) => {
+  try {
+    const filename = path.basename(req.params.filename);
+    if (!/^estate_backup_.*\.db$/.test(filename)) {
+      return res.status(400).json({ error: 'Invalid backup filename' });
+    }
+    const filePath = path.join(BACKUPS_DIR, filename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Backup file not found' });
+    }
+    res.setHeader('Content-Type', 'application/x-sqlite3');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.download(filePath, filename);
+  } catch (err) {
+    console.error('Download backup error:', err);
+    res.status(500).json({ error: 'Failed to download backup' });
+  }
+});
+
+// Endpoint: Admin Delete Database Backup
+app.delete('/api/admin/database/backups/:filename', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const filename = path.basename(req.params.filename);
+    if (!/^estate_backup_.*\.db$/.test(filename)) {
+      return res.status(400).json({ error: 'Invalid backup filename' });
+    }
+    const filePath = path.join(BACKUPS_DIR, filename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Backup file not found' });
+    }
+
+    if (filename.includes('pre_ai') && req.query.confirm !== 'true') {
+      return res.status(400).json({ 
+        error: 'This is a protected Pre-AI baseline backup. To delete, confirm explicit deletion.' 
+      });
+    }
+
+    fs.unlinkSync(filePath);
+
+    await logAudit(
+      req.user.estate_id,
+      req.user.id,
+      'DELETE_DATABASE_BACKUP',
+      'database_backup',
+      filename,
+      { filename, message: `${req.user.name} deleted database backup ${filename}` }
+    );
+
+    res.json({ success: true, message: `Backup ${filename} deleted successfully` });
+  } catch (err) {
+    console.error('Delete backup error:', err);
+    res.status(500).json({ error: 'Failed to delete backup' });
   }
 });
 
