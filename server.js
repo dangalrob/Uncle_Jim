@@ -10,6 +10,7 @@ import path from 'path';
 import fs from 'fs';
 import nodemailer from 'nodemailer';
 import { fileURLToPath } from 'url';
+import { extractLegacyData } from './services/legacyNormalization.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2741,6 +2742,334 @@ app.delete('/api/admin/database/backups/:filename', authenticateToken, requireRo
   } catch (err) {
     console.error('Delete backup error:', err);
     res.status(500).json({ error: 'Failed to delete backup' });
+  }
+});
+
+// ----------------------------------------------------
+// PHASE 2: LEGACY DATA NORMALIZATION PILOT ENDPOINTS
+// ----------------------------------------------------
+
+// List items with legacy notes and their normalization status for the Admin pilot
+app.get('/api/admin/normalize/items', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const items = await dbAll(`
+      SELECT 
+        items.id, items.title, items.description, items.special_handling_notes, items.value,
+        items.era, items.origin, items.maker, items.materials, items.dimensions, items.condition,
+        items.estimated_value_low, items.estimated_value_high, items.distribution_value,
+        items.normalization_status, items.legacy_assessment_notes, items.created_at,
+        (SELECT COUNT(*) FROM item_legacy_snapshots WHERE item_id = items.id) as snapshot_count,
+        (SELECT photo_url FROM item_photos WHERE item_id = items.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_photo,
+        (SELECT thumbnail_url FROM item_photos WHERE item_id = items.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_thumb
+      FROM items
+      WHERE items.estate_id = ?
+      ORDER BY 
+        CASE 
+          WHEN items.special_handling_notes IS NOT NULL AND items.special_handling_notes != '' THEN 0
+          WHEN items.description LIKE '%value%' OR items.description LIKE '%dollar%' OR items.description LIKE '%worth%' THEN 1
+          ELSE 2 
+        END,
+        items.created_at ASC
+    `, [estateId]);
+
+    // Fetch configurable distribution threshold
+    const estate = await dbGet(`SELECT distribution_threshold_value FROM estates WHERE id = ?`, [estateId]);
+    const threshold = estate?.distribution_threshold_value || 100.0;
+
+    res.json({ items, threshold });
+  } catch (err) {
+    console.error('List normalization items error:', err);
+    res.status(500).json({ error: 'Failed to fetch items for normalization' });
+  }
+});
+
+// Run AI / heuristic extraction against legacy item text (WITHOUT modifying items table)
+app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const estateId = req.user.estate_id;
+
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+
+    // Pre-extraction safeguard: Check if a baseline snapshot already exists
+    let existingBaseline = await dbGet(
+      `SELECT id FROM item_legacy_snapshots WHERE item_id = ? AND snapshot_type = 'PRE_NORMALIZATION_BASELINE'`,
+      [itemId]
+    );
+
+    let snapshotId = existingBaseline ? existingBaseline.id : null;
+    let createdSnapshot = false;
+
+    // Create immutable baseline snapshot only if one does not already exist
+    if (!snapshotId) {
+      snapshotId = 'snap_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
+      await dbRun(`
+        INSERT INTO item_legacy_snapshots (
+          id, item_id, original_title, original_description, original_special_handling_notes,
+          original_value, original_provenance, original_era, snapshot_type, created_by_user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PRE_NORMALIZATION_BASELINE', ?)
+      `, [
+        snapshotId,
+        item.id,
+        item.title || null,
+        item.description || null,
+        item.special_handling_notes || null,
+        item.value || null,
+        item.provenance_text || null,
+        item.era || null,
+        req.user.id
+      ]);
+      createdSnapshot = true;
+
+      await logAudit(
+        estateId,
+        req.user.id,
+        'CREATE_LEGACY_SNAPSHOT',
+        'item_legacy_snapshots',
+        snapshotId,
+        { itemId, snapshotType: 'PRE_NORMALIZATION_BASELINE' }
+      );
+    }
+
+    // Run extraction service (Gemini API or fallback deterministic heuristic)
+    const proposed = await extractLegacyData(item, process.env.GEMINI_API_KEY);
+
+    // Check estate distribution threshold ($100 default)
+    const estate = await dbGet(`SELECT distribution_threshold_value FROM estates WHERE id = ?`, [estateId]);
+    const threshold = estate?.distribution_threshold_value || 100.0;
+    const highVal = proposed.estimatedValueHigh || proposed.estimatedValueLow || 0;
+    const exceedsThreshold = highVal >= threshold;
+
+    // Return proposed extraction and baseline information without modifying items table
+    res.json({
+      success: true,
+      snapshotId,
+      createdSnapshot,
+      threshold,
+      exceedsThreshold,
+      original: {
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        special_handling_notes: item.special_handling_notes,
+        value: item.value,
+        origin: item.origin,
+        era: item.era,
+        materials: item.materials,
+        maker: item.maker,
+        identifying_marks: item.identifying_marks,
+        provenance_text: item.provenance_text,
+        dimensions: item.dimensions,
+        condition: item.condition,
+        estimated_value_low: item.estimated_value_low,
+        estimated_value_high: item.estimated_value_high,
+        distribution_value: item.distribution_value,
+        counts_against_distribution: item.counts_against_distribution,
+        value_basis: item.value_basis
+      },
+      proposed
+    });
+  } catch (err) {
+    console.error('Extract legacy data error:', err);
+    res.status(500).json({ error: 'Failed to extract legacy data: ' + err.message });
+  }
+});
+
+// Admin approves field changes and commits them to items table
+app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const estateId = req.user.estate_id;
+    const { approvedFields, snapshotId, fullProposedPayload } = req.body;
+
+    if (!approvedFields) {
+      return res.status(400).json({ error: 'approvedFields object is required' });
+    }
+
+    const currentItem = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!currentItem) return res.status(404).json({ error: 'Item not found' });
+
+    // Ensure baseline snapshot exists
+    let existingBaseline = await dbGet(
+      `SELECT id FROM item_legacy_snapshots WHERE item_id = ? AND snapshot_type = 'PRE_NORMALIZATION_BASELINE'`,
+      [itemId]
+    );
+
+    if (!existingBaseline) {
+      const newSnapId = snapshotId || ('snap_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4));
+      await dbRun(`
+        INSERT INTO item_legacy_snapshots (
+          id, item_id, original_title, original_description, original_special_handling_notes,
+          original_value, original_provenance, original_era, snapshot_type, created_by_user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PRE_NORMALIZATION_BASELINE', ?)
+      `, [
+        newSnapId,
+        currentItem.id,
+        currentItem.title || null,
+        currentItem.description || null,
+        currentItem.special_handling_notes || null,
+        currentItem.value || null,
+        currentItem.provenance_text || null,
+        currentItem.era || null,
+        req.user.id
+      ]);
+    }
+
+    // Combine original notes into legacy_assessment_notes for archival
+    const legacyArchivePieces = [];
+    if (currentItem.special_handling_notes && currentItem.special_handling_notes.trim()) {
+      legacyArchivePieces.push(`=== ORIGINAL SPECIAL HANDLING / AI NOTES ===\n${currentItem.special_handling_notes.trim()}`);
+    }
+    if (currentItem.description && currentItem.description.trim()) {
+      legacyArchivePieces.push(`=== ORIGINAL RAW DESCRIPTION ===\n${currentItem.description.trim()}`);
+    }
+    const legacyArchiveNotes = legacyArchivePieces.join('\n\n');
+
+    // Values to apply to items table
+    const title = approvedFields.title !== undefined ? approvedFields.title : currentItem.title;
+    const cleanDescription = approvedFields.description !== undefined ? approvedFields.description : currentItem.description;
+    const origin = approvedFields.origin !== undefined ? approvedFields.origin : currentItem.origin;
+    const era = approvedFields.era !== undefined ? approvedFields.era : currentItem.era;
+    const materials = approvedFields.materials !== undefined ? approvedFields.materials : currentItem.materials;
+    const maker = approvedFields.maker !== undefined ? approvedFields.maker : currentItem.maker;
+    const identifyingMarks = approvedFields.identifying_marks !== undefined ? approvedFields.identifying_marks : currentItem.identifying_marks;
+    const provenanceText = approvedFields.provenance_text !== undefined ? approvedFields.provenance_text : currentItem.provenance_text;
+    const dimensions = approvedFields.dimensions !== undefined ? approvedFields.dimensions : currentItem.dimensions;
+    const condition = approvedFields.condition !== undefined ? approvedFields.condition : currentItem.condition;
+    
+    // Numeric valuation separation
+    const estValLow = approvedFields.estimated_value_low !== undefined ? (parseFloat(approvedFields.estimated_value_low) || null) : currentItem.estimated_value_low;
+    const estValHigh = approvedFields.estimated_value_high !== undefined ? (parseFloat(approvedFields.estimated_value_high) || null) : currentItem.estimated_value_high;
+    const valueBasis = approvedFields.value_basis !== undefined ? approvedFields.value_basis : currentItem.value_basis;
+    
+    // Distribution value (only set if explicitly provided by Admin)
+    const distributionValue = approvedFields.distribution_value !== undefined ? (parseFloat(approvedFields.distribution_value) || null) : currentItem.distribution_value;
+    const countsAgainstDist = approvedFields.counts_against_distribution !== undefined ? (approvedFields.counts_against_distribution ? 1 : 0) : currentItem.counts_against_distribution;
+
+    const assessmentConfidence = approvedFields.assessment_confidence || currentItem.assessment_confidence || 'MEDIUM';
+    const confidenceReason = approvedFields.confidence_reason || currentItem.confidence_reason || null;
+    const appraisalRecommended = approvedFields.appraisal_recommended ? 1 : 0;
+    const appraisalReason = approvedFields.appraisal_reason || null;
+
+    // Update the item record
+    await dbRun(`
+      UPDATE items SET
+        title = ?,
+        description = ?,
+        origin = ?,
+        era = ?,
+        materials = ?,
+        maker = ?,
+        identifying_marks = ?,
+        provenance_text = ?,
+        dimensions = ?,
+        condition = ?,
+        estimated_value_low = ?,
+        estimated_value_high = ?,
+        distribution_value = ?,
+        counts_against_distribution = ?,
+        value_basis = ?,
+        assessment_confidence = ?,
+        confidence_reason = ?,
+        appraisal_recommended = ?,
+        appraisal_reason = ?,
+        legacy_assessment_notes = ?,
+        special_handling_notes = '',
+        normalization_status = 'normalized',
+        assessment_status = 'completed',
+        assessment_date = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND estate_id = ?
+    `, [
+      title,
+      cleanDescription,
+      origin,
+      era,
+      materials,
+      maker,
+      identifyingMarks,
+      provenanceText,
+      dimensions,
+      condition,
+      estValLow,
+      estValHigh,
+      distributionValue,
+      countsAgainstDist,
+      valueBasis,
+      assessmentConfidence,
+      confidenceReason,
+      appraisalRecommended,
+      appraisalReason,
+      legacyArchiveNotes,
+      itemId,
+      estateId
+    ]);
+
+    // Record assessment in assessment_history table
+    const historyId = 'ah_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
+    await dbRun(`
+      INSERT INTO assessment_history (
+        id, item_id, assessment_type, status, created_by_user_id, approved_by_user_id,
+        approved_at, estimated_value_low, estimated_value_high, distribution_value,
+        counts_against_distribution, value_basis, confidence_level, confidence_reason,
+        appraisal_recommended, appraisal_reason, assessment_notes, payload_json
+      ) VALUES (?, ?, 'LEGACY_NORMALIZATION', 'APPROVED', ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      historyId,
+      itemId,
+      req.user.id,
+      req.user.id,
+      estValLow,
+      estValHigh,
+      distributionValue,
+      countsAgainstDist,
+      valueBasis,
+      assessmentConfidence,
+      confidenceReason,
+      appraisalRecommended,
+      appraisalReason,
+      'Approved via Legacy Data Normalization Wizard',
+      JSON.stringify({
+        approvedFields,
+        fullProposedPayload: fullProposedPayload || null,
+        previousState: {
+          title: currentItem.title,
+          description: currentItem.description,
+          special_handling_notes: currentItem.special_handling_notes,
+          value: currentItem.value
+        }
+      })
+    ]);
+
+    // Audit log
+    await logAudit(
+      estateId,
+      req.user.id,
+      'NORMALIZE_LEGACY_DATA',
+      'items',
+      itemId,
+      {
+        itemTitle: title,
+        historyId,
+        estValLow,
+        estValHigh,
+        distributionValue,
+        countsAgainstDist
+      }
+    );
+
+    const updatedItem = await dbGet(`SELECT * FROM items WHERE id = ?`, [itemId]);
+    res.json({
+      success: true,
+      message: 'Item successfully normalized and archived.',
+      item: updatedItem,
+      historyId
+    });
+  } catch (err) {
+    console.error('Approve normalization error:', err);
+    res.status(500).json({ error: 'Failed to approve normalization: ' + err.message });
   }
 });
 

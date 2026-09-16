@@ -15,6 +15,7 @@ import AdminWorkbench from './components/AdminWorkbench';
 import AdminReviewMode from './components/AdminReviewMode';
 import InstitutionPortal from './components/InstitutionPortal';
 import PhotoCropperModal from './components/PhotoCropperModal';
+import LegacyNormalizationWizard from './components/LegacyNormalizationWizard';
 
 export function getGreeting(date = new Date()) {
   const hour = date.getHours();
@@ -213,6 +214,12 @@ export default function App() {
   const [backupList, setBackupList] = useState([]);
   const [backupListLoading, setBackupListLoading] = useState(false);
   
+  // Phase 2: Legacy Normalization Wizard State
+  const [normalizationItems, setNormalizationItems] = useState([]);
+  const [normalizationLoading, setNormalizationLoading] = useState(false);
+  const [normalizationThreshold, setNormalizationThreshold] = useState(100);
+  const [normalizingItem, setNormalizingItem] = useState(null); // Active item opened in Normalization Wizard
+  
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
   const [usersList, setUsersList] = useState([]);
@@ -273,6 +280,24 @@ export default function App() {
       console.error("Failed to load audit logs:", err);
     } finally {
       setIsLoadingLogs(false);
+    }
+  };
+
+  const fetchNormalizationItems = async () => {
+    setNormalizationLoading(true);
+    try {
+      const res = await fetch('/api/admin/normalize/items');
+      if (res.ok) {
+        const data = await res.json();
+        setNormalizationItems(data.items || []);
+        if (data.threshold) {
+          setNormalizationThreshold(data.threshold);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load items for normalization:', err);
+    } finally {
+      setNormalizationLoading(false);
     }
   };
 
@@ -2345,6 +2370,10 @@ export default function App() {
 
                 <button className={`sidebar-item ${currentView === 'data_backup' ? 'active' : ''}`} onClick={() => { setCurrentView('data_backup'); fetchDatabaseBackups(); setMobileNavOpen(false); }}>
                   <Database size={18} /> Data & Backup
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'legacy_normalize' ? 'active' : ''}`} onClick={() => { setCurrentView('legacy_normalize'); fetchNormalizationItems(); setMobileNavOpen(false); }}>
+                  <Sparkles size={18} color="var(--gold-accent)" /> Legacy Data Review
                 </button>
 
                 {/* Mobile & Admin Operational Controls Section */}
@@ -5551,6 +5580,175 @@ export default function App() {
                             </td>
                           </tr>
                         ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ADMIN LEGACY DATA NORMALIZATION PILOT VIEW */}
+          {currentView === 'legacy_normalize' && currentUser?.role === 'admin' && (
+            <div style={{ maxWidth: '1000px', margin: '0 auto', paddingBottom: '3rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', background: 'var(--pine-primary)', color: '#fff', padding: '2px 8px', borderRadius: '4px' }}>
+                      Phase 2 Pilot
+                    </span>
+                    <span style={{ fontSize: '0.78rem', color: '#166534', background: '#dcfce7', padding: '2px 8px', borderRadius: '12px', fontWeight: 600 }}>
+                      Controlled 5-Item Test Only
+                    </span>
+                  </div>
+                  <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)', margin: '0 0 4px 0' }}>
+                    ✨ Legacy Data Normalization
+                  </h1>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>
+                    Select an item to run extraction, create a baseline snapshot, and review field-by-field before approving.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn-outline" onClick={fetchNormalizationItems} disabled={normalizationLoading}>
+                    🔄 Refresh List
+                  </button>
+                  <button className="btn-green" onClick={handleNavigateHome}>
+                    🏠 Return to Dashboard
+                  </button>
+                </div>
+              </div>
+
+              {/* ACTIVE WIZARD MODAL / OVERLAY */}
+              {normalizingItem && (
+                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', zIndex: 9999, overflowY: 'auto', padding: '1rem' }}>
+                  <LegacyNormalizationWizard
+                    item={normalizingItem}
+                    threshold={normalizationThreshold}
+                    onClose={() => setNormalizingItem(null)}
+                    onSuccess={(updatedItem) => {
+                      fetchNormalizationItems();
+                      fetchItems();
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* PILOT OVERVIEW BANNER */}
+              <div className="card" style={{ padding: '1.25rem 1.5rem', marginBottom: '1.5rem', background: '#f8fafc', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem' }}>
+                  <div style={{ background: 'var(--pine-primary)', color: '#fff', padding: '10px', borderRadius: '8px' }}>
+                    <Sparkles size={22} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: '1.05rem', color: 'var(--pine-deep)', fontFamily: 'var(--font-heading)' }}>
+                      Controlled Pilot Instructions
+                    </h3>
+                    <p style={{ color: '#475569', fontSize: '0.86rem', lineHeight: 1.5, margin: 0 }}>
+                      This pilot allows you to manually select up to 5 items with conversational AI notes. When you click <strong>"Normalize Item"</strong>, the system creates an immutable baseline snapshot, extracts structured physical and valuation attributes, and lets you accept or edit each field before saving.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* ITEMS TABLE FOR PILOT SELECTION */}
+              <div className="card" style={{ padding: '1.5rem', background: '#fff', borderRadius: '12px', border: '1px solid var(--border-color)', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                  <h3 style={{ margin: 0, fontSize: '1.1rem', color: 'var(--pine-deep)', fontFamily: 'var(--font-heading)' }}>
+                    Candidate Inventory Items
+                  </h3>
+                  <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    {normalizationItems.length} items available
+                  </span>
+                </div>
+
+                {normalizationLoading && (
+                  <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <Loader2 size={24} style={{ animation: 'spin 1.2s linear infinite', margin: '0 auto 0.5rem' }} />
+                    <div>Loading normalization inventory...</div>
+                  </div>
+                )}
+
+                {!normalizationLoading && normalizationItems.length === 0 && (
+                  <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    No items found in this estate.
+                  </div>
+                )}
+
+                {!normalizationLoading && normalizationItems.length > 0 && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.86rem' }}>
+                      <thead>
+                        <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', textAlign: 'left' }}>
+                          <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#475569' }}>Item</th>
+                          <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#475569' }}>Legacy Notes Indicator</th>
+                          <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#475569' }}>Status</th>
+                          <th style={{ padding: '0.75rem 1rem', fontWeight: 600, color: '#475569', textAlign: 'right' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {normalizationItems.map(itm => {
+                          const hasNotes = (itm.special_handling_notes && itm.special_handling_notes.trim().length > 0);
+                          const isNormalized = itm.normalization_status === 'normalized';
+
+                          return (
+                            <tr key={itm.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                              <td style={{ padding: '0.75rem 1rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                  {itm.primary_thumb || itm.primary_photo ? (
+                                    <img
+                                      src={itm.primary_thumb || itm.primary_photo}
+                                      alt={itm.title}
+                                      style={{ width: '40px', height: '40px', objectFit: 'cover', borderRadius: '6px', border: '1px solid #e2e8f0' }}
+                                    />
+                                  ) : (
+                                    <div style={{ width: '40px', height: '40px', background: '#f1f5f9', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8' }}>
+                                      <Package size={18} />
+                                    </div>
+                                  )}
+                                  <div>
+                                    <div style={{ fontWeight: 600, color: '#1e293b' }}>{itm.title}</div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ID: {itm.id}</div>
+                                  </div>
+                                </div>
+                              </td>
+
+                              <td style={{ padding: '0.75rem 1rem' }}>
+                                {hasNotes ? (
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: '12px', fontWeight: 600 }}>
+                                    <FileText size={12} /> Notes Present ({itm.special_handling_notes.length} chars)
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                                    Standard description only
+                                  </span>
+                                )}
+                              </td>
+
+                              <td style={{ padding: '0.75rem 1rem' }}>
+                                {isNormalized ? (
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '12px', fontWeight: 700 }}>
+                                    <CheckCircle2 size={12} /> Normalized
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize: '0.75rem', color: '#64748b', background: '#f1f5f9', padding: '2px 8px', borderRadius: '12px' }}>
+                                    Not Reviewed
+                                  </span>
+                                )}
+                              </td>
+
+                              <td style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>
+                                <button
+                                  className={isNormalized ? "btn-outline" : "btn-green"}
+                                  style={{ padding: '0.4rem 0.85rem', fontSize: '0.82rem', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                                  onClick={() => setNormalizingItem(itm)}
+                                >
+                                  <Sparkles size={14} />
+                                  <span>{isNormalized ? 'Re-Review' : 'Normalize Item'}</span>
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
