@@ -49,6 +49,7 @@ export default function AdminReviewMode({
   onRestorePhoto,
   onSetPrimaryPhoto,
   onDeletePhoto,
+  onAIAssessItem,
   onClose,
   initialItemId = null
 }) {
@@ -1330,6 +1331,27 @@ function DrillDownModal({
               <span style={{ fontSize: '0.8rem', color: saveToast.includes('✓') ? '#15803d' : '#b91c1c', fontWeight: 'bold' }}>
                 {saveToast}
               </span>
+            )}
+
+            {onAIAssessItem && (
+              <button
+                className="btn-outline"
+                onClick={() => onAIAssessItem(item)}
+                style={{
+                  padding: '0.4rem 0.85rem',
+                  fontSize: '0.82rem',
+                  fontWeight: 'bold',
+                  color: 'var(--pine-primary)',
+                  borderColor: 'var(--pine-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  background: '#f0fdf4'
+                }}
+                title="Launch AI Assessment Wizard for this item"
+              >
+                <Sparkles size={14} color="var(--pine-primary)" /> AI Assess This Item
+              </button>
             )}
 
             <button

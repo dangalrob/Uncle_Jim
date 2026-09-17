@@ -11,6 +11,7 @@ import fs from 'fs';
 import nodemailer from 'nodemailer';
 import { fileURLToPath } from 'url';
 import { extractLegacyData } from './services/legacyNormalization.js';
+import { generateAIAssessment } from './services/aiAssessment.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3070,6 +3071,305 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
   } catch (err) {
     console.error('Approve normalization error:', err);
     res.status(500).json({ error: 'Failed to approve normalization: ' + err.message });
+  }
+});
+
+// ----------------------------------------------------
+// PHASE 3: AI-POWERED ITEM ASSESSMENT WIZARD ENDPOINTS
+// ----------------------------------------------------
+
+// 1. Generate Draft AI Assessment (Multimodal Vision / Guided Answers)
+app.post('/api/admin/assess/generate', authenticateToken, requireRole(['admin']), upload.any(), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const { itemId, guidedAnswersJson } = req.body;
+
+    let guidedAnswers = {};
+    if (guidedAnswersJson) {
+      try {
+        guidedAnswers = typeof guidedAnswersJson === 'string' ? JSON.parse(guidedAnswersJson) : guidedAnswersJson;
+      } catch (e) {
+        console.warn('Could not parse guidedAnswersJson:', e.message);
+      }
+    }
+
+    // If existing itemId provided, fetch existing item record and photos
+    let existingItem = null;
+    let existingPhotos = [];
+    if (itemId) {
+      existingItem = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+      if (existingItem) {
+        existingPhotos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId]);
+      }
+    }
+
+    // Estate distribution threshold
+    const estate = await dbGet(`SELECT distribution_threshold_value FROM estates WHERE id = ?`, [estateId]);
+    const threshold = estate?.distribution_threshold_value || 100.0;
+
+    // Photos provided in request or existing
+    const reqFiles = (req.files || []).map(f => ({
+      path: f.path,
+      fieldname: f.fieldname,
+      originalname: f.originalname,
+      mimetype: f.mimetype
+    }));
+
+    // If existing item has photos on disk, include primary/first photos if no new upload
+    if (reqFiles.length === 0 && existingPhotos.length > 0) {
+      for (const ep of existingPhotos) {
+        if (ep.photo_url) {
+          const relPath = ep.photo_url.replace(/^\/uploads\//, '');
+          const diskPath = path.join(UPLOADS_DIR, relPath);
+          if (fs.existsSync(diskPath)) {
+            reqFiles.push({
+              path: diskPath,
+              fieldname: 'existing_photo',
+              originalname: path.basename(diskPath),
+              mimetype: diskPath.endsWith('.webp') ? 'image/webp' : (diskPath.endsWith('.png') ? 'image/png' : 'image/jpeg')
+            });
+          }
+        }
+      }
+    }
+
+    // Call Assessment Service
+    const assessment = await generateAIAssessment({
+      photos: reqFiles,
+      guidedAnswers,
+      existingItem,
+      distributionThreshold: threshold,
+      apiKey: process.env.GEMINI_API_KEY
+    });
+
+    res.json({
+      success: true,
+      threshold,
+      exceedsThreshold: assessment.exceedsThreshold,
+      assessment,
+      uploadedPhotoPaths: reqFiles.map(f => f.path)
+    });
+  } catch (err) {
+    console.error('Generate AI assessment error:', err);
+    res.status(500).json({ error: 'Failed to generate AI assessment: ' + err.message });
+  }
+});
+
+// 2. Commit Approved AI Assessment (New Item or Existing Item Update)
+app.post('/api/admin/assess/approve', authenticateToken, requireRole(['admin']), upload.any(), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const { itemId: targetItemId, approvedFieldsJson, fullAssessmentPayloadJson } = req.body;
+
+    let approvedFields = {};
+    if (approvedFieldsJson) {
+      try {
+        approvedFields = typeof approvedFieldsJson === 'string' ? JSON.parse(approvedFieldsJson) : approvedFieldsJson;
+      } catch (e) {
+        return res.status(400).json({ error: 'Invalid approvedFieldsJson: ' + e.message });
+      }
+    }
+
+    let fullPayload = {};
+    if (fullAssessmentPayloadJson) {
+      try {
+        fullPayload = typeof fullAssessmentPayloadJson === 'string' ? JSON.parse(fullAssessmentPayloadJson) : fullAssessmentPayloadJson;
+      } catch (e) {}
+    }
+
+    let itemId = targetItemId;
+    let isNewItem = false;
+    let itemNumber = null;
+
+    if (!itemId) {
+      // Create new item
+      isNewItem = true;
+      itemId = 'item_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
+      itemNumber = 'UJ-' + Math.floor(1000 + Math.random() * 9000);
+
+      await dbRun(`
+        INSERT INTO items (
+          id, estate_id, item_number, title, description, origin, era, materials, maker,
+          identifying_marks, provenance_text, dimensions, condition, estimated_value_low,
+          estimated_value_high, distribution_value, counts_against_distribution, value_basis,
+          assessment_confidence, confidence_reason, appraisal_recommended, appraisal_reason,
+          assessment_status, assessment_date, status, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?,
+          ?, ?, ?, ?,
+          ?, ?, ?, ?,
+          'completed', CURRENT_TIMESTAMP, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+      `, [
+        itemId,
+        estateId,
+        itemNumber,
+        approvedFields.title || 'Untitled Assessment Item',
+        approvedFields.description || null,
+        approvedFields.origin || null,
+        approvedFields.era || null,
+        approvedFields.materials || null,
+        approvedFields.maker || null,
+        approvedFields.identifying_marks || null,
+        approvedFields.provenance_text || null,
+        approvedFields.dimensions || null,
+        approvedFields.condition || null,
+        approvedFields.estimated_value_low !== undefined ? (parseFloat(approvedFields.estimated_value_low) || null) : null,
+        approvedFields.estimated_value_high !== undefined ? (parseFloat(approvedFields.estimated_value_high) || null) : null,
+        approvedFields.distribution_value !== undefined ? (parseFloat(approvedFields.distribution_value) || null) : null,
+        approvedFields.counts_against_distribution ? 1 : 0,
+        approvedFields.value_basis || null,
+        approvedFields.assessment_confidence || 'MEDIUM',
+        approvedFields.confidence_reason || null,
+        approvedFields.appraisal_recommended ? 1 : 0,
+        approvedFields.appraisal_reason || null
+      ]);
+    } else {
+      // Update existing item
+      const currentItem = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+      if (!currentItem) return res.status(404).json({ error: 'Item not found' });
+
+      await dbRun(`
+        UPDATE items SET
+          title = COALESCE(?, title),
+          description = COALESCE(?, description),
+          origin = COALESCE(?, origin),
+          era = COALESCE(?, era),
+          materials = COALESCE(?, materials),
+          maker = COALESCE(?, maker),
+          identifying_marks = COALESCE(?, identifying_marks),
+          provenance_text = COALESCE(?, provenance_text),
+          dimensions = COALESCE(?, dimensions),
+          condition = COALESCE(?, condition),
+          estimated_value_low = ?,
+          estimated_value_high = ?,
+          distribution_value = ?,
+          counts_against_distribution = ?,
+          value_basis = COALESCE(?, value_basis),
+          assessment_confidence = ?,
+          confidence_reason = ?,
+          appraisal_recommended = ?,
+          appraisal_reason = ?,
+          assessment_status = 'completed',
+          assessment_date = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND estate_id = ?
+      `, [
+        approvedFields.title !== undefined ? approvedFields.title : null,
+        approvedFields.description !== undefined ? approvedFields.description : null,
+        approvedFields.origin !== undefined ? approvedFields.origin : null,
+        approvedFields.era !== undefined ? approvedFields.era : null,
+        approvedFields.materials !== undefined ? approvedFields.materials : null,
+        approvedFields.maker !== undefined ? approvedFields.maker : null,
+        approvedFields.identifying_marks !== undefined ? approvedFields.identifying_marks : null,
+        approvedFields.provenance_text !== undefined ? approvedFields.provenance_text : null,
+        approvedFields.dimensions !== undefined ? approvedFields.dimensions : null,
+        approvedFields.condition !== undefined ? approvedFields.condition : null,
+        approvedFields.estimated_value_low !== undefined ? (parseFloat(approvedFields.estimated_value_low) || null) : currentItem.estimated_value_low,
+        approvedFields.estimated_value_high !== undefined ? (parseFloat(approvedFields.estimated_value_high) || null) : currentItem.estimated_value_high,
+        approvedFields.distribution_value !== undefined ? (parseFloat(approvedFields.distribution_value) || null) : currentItem.distribution_value,
+        approvedFields.counts_against_distribution !== undefined ? (approvedFields.counts_against_distribution ? 1 : 0) : currentItem.counts_against_distribution,
+        approvedFields.value_basis !== undefined ? approvedFields.value_basis : null,
+        approvedFields.assessment_confidence || currentItem.assessment_confidence || 'MEDIUM',
+        approvedFields.confidence_reason || currentItem.confidence_reason || null,
+        approvedFields.appraisal_recommended ? 1 : 0,
+        approvedFields.appraisal_reason || null,
+        itemId,
+        estateId
+      ]);
+    }
+
+    // Process and attach newly uploaded photos if any
+    const allFiles = req.files || [];
+    if (allFiles.length > 0) {
+      const existingPhotos = await dbAll(`SELECT id FROM item_photos WHERE item_id = ?`, [itemId]);
+      let startIndex = existingPhotos.length;
+
+      for (let i = 0; i < allFiles.length; i++) {
+        const file = allFiles[i];
+        const thumbFilename = 'thumb-' + file.filename.replace(/\.[^/.]+$/, "") + '.webp';
+        const thumbPath = path.join(THUMB_UPLOADS_DIR, thumbFilename);
+
+        try {
+          await sharp(file.path)
+            .resize(600, 600, { fit: 'inside', withoutEnlargement: true })
+            .toFormat('webp', { quality: 80 })
+            .toFile(thumbPath);
+        } catch (sharpErr) {
+          console.warn('Sharp thumbnail warning:', sharpErr.message);
+          try { fs.copyFileSync(file.path, thumbPath); } catch (e) {}
+        }
+
+        const photoUrl = `/uploads/full/${file.filename}`;
+        const thumbnailUrl = fs.existsSync(thumbPath) ? `/uploads/thumbs/${thumbFilename}` : photoUrl;
+        const photoId = 'photo_' + Date.now() + '_' + i;
+        const isPrimary = (startIndex === 0 && i === 0) ? 1 : 0;
+
+        await dbRun(`
+          INSERT INTO item_photos (id, item_id, photo_url, thumbnail_url, original_photo_url, is_primary, display_order)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [photoId, itemId, photoUrl, thumbnailUrl, photoUrl, isPrimary, startIndex + i]);
+      }
+    }
+
+    // Record in assessment_history
+    const historyId = 'ah_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
+    await dbRun(`
+      INSERT INTO assessment_history (
+        id, item_id, assessment_type, status, created_by_user_id, approved_by_user_id,
+        approved_at, estimated_value_low, estimated_value_high, distribution_value,
+        counts_against_distribution, value_basis, confidence_level, confidence_reason,
+        appraisal_recommended, appraisal_reason, assessment_notes, payload_json
+      ) VALUES (?, ?, 'AI_WIZARD_ASSESSMENT', 'APPROVED', ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      historyId,
+      itemId,
+      req.user.id,
+      req.user.id,
+      approvedFields.estimated_value_low !== undefined ? (parseFloat(approvedFields.estimated_value_low) || null) : null,
+      approvedFields.estimated_value_high !== undefined ? (parseFloat(approvedFields.estimated_value_high) || null) : null,
+      approvedFields.distribution_value !== undefined ? (parseFloat(approvedFields.distribution_value) || null) : null,
+      approvedFields.counts_against_distribution ? 1 : 0,
+      approvedFields.value_basis || null,
+      approvedFields.assessment_confidence || 'MEDIUM',
+      approvedFields.confidence_reason || null,
+      approvedFields.appraisal_recommended ? 1 : 0,
+      approvedFields.appraisal_reason || null,
+      'Approved via AI-Powered Item Assessment Wizard',
+      JSON.stringify({
+        approvedFields,
+        fullPayload,
+        isNewItem
+      })
+    ]);
+
+    // Audit log
+    await logAudit(
+      estateId,
+      req.user.id,
+      isNewItem ? 'CREATE_ITEM_AI_ASSESSMENT' : 'UPDATE_ITEM_AI_ASSESSMENT',
+      'items',
+      itemId,
+      {
+        itemTitle: approvedFields.title,
+        isNewItem,
+        historyId
+      }
+    );
+
+    const savedItem = await dbGet(`SELECT * FROM items WHERE id = ?`, [itemId]);
+    const savedPhotos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId]);
+
+    res.json({
+      success: true,
+      message: isNewItem ? 'Item created and assessed successfully.' : 'Item assessment updated successfully.',
+      item: { ...savedItem, photos: savedPhotos },
+      historyId
+    });
+  } catch (err) {
+    console.error('Approve assessment error:', err);
+    res.status(500).json({ error: 'Failed to commit assessment: ' + err.message });
   }
 });
 

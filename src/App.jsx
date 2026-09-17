@@ -16,6 +16,7 @@ import AdminReviewMode from './components/AdminReviewMode';
 import InstitutionPortal from './components/InstitutionPortal';
 import PhotoCropperModal from './components/PhotoCropperModal';
 import LegacyNormalizationWizard from './components/LegacyNormalizationWizard';
+import AIAssessmentWizard from './components/AIAssessmentWizard';
 
 export function getGreeting(date = new Date()) {
   const hour = date.getHours();
@@ -219,6 +220,10 @@ export default function App() {
   const [normalizationLoading, setNormalizationLoading] = useState(false);
   const [normalizationThreshold, setNormalizationThreshold] = useState(100);
   const [normalizingItem, setNormalizingItem] = useState(null); // Active item opened in Normalization Wizard
+  
+  // Phase 3: AI-Powered Assessment Wizard State
+  const [showAddChoiceModal, setShowAddChoiceModal] = useState(false); // Modal offering Standard vs AI Assessment
+  const [aiAssessmentItem, setAiAssessmentItem] = useState(null); // Active item (or empty object for new item) in AI Wizard
   
   const [items, setItems] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -962,6 +967,14 @@ export default function App() {
     }
     setCurrentView('capture');
     setMobileNavOpen(false);
+  };
+
+  const handlePromptAddItem = () => {
+    if (currentUser?.role === 'admin') {
+      setShowAddChoiceModal(true);
+    } else {
+      handleOpenCapture();
+    }
   };
 
   const handleCancelCapture = async () => {
@@ -2340,7 +2353,7 @@ export default function App() {
                   <MessageSquare size={18} /> Family Stories
                 </button>
 
-                <button className={`sidebar-item ${currentView === 'capture' ? 'active' : ''}`} onClick={handleOpenCapture}>
+                <button className={`sidebar-item ${currentView === 'capture' ? 'active' : ''}`} onClick={handlePromptAddItem}>
                   <PlusCircle size={18} /> Add Item (Camera)
                 </button>
 
@@ -2852,7 +2865,7 @@ export default function App() {
                   <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)' }}>{getGreeting()}, {currentUser?.name ? currentUser.name.split(' ')[0] : 'Dan'}</h1>
                   <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Here's the latest indicative status of Uncle Jim's estate inventory.</p>
                 </div>
-                <button className="btn-green" onClick={handleOpenCapture}>
+                <button className="btn-green" onClick={handlePromptAddItem}>
                   + Add Item
                 </button>
               </div>
@@ -3735,6 +3748,24 @@ export default function App() {
                           onClick={() => handleStartEditItem(currentReviewItem)}
                         >
                           <Edit3 size={15} /> Edit Item
+                        </button>
+                        <button
+                          className="btn-outline"
+                          style={{
+                            padding: '0.4rem 0.85rem',
+                            fontSize: '0.85rem',
+                            color: 'var(--pine-primary)',
+                            borderColor: 'var(--pine-primary)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                            fontWeight: 'bold',
+                            background: '#f0fdf4'
+                          }}
+                          onClick={() => setAiAssessmentItem(currentReviewItem)}
+                          title="Launch AI Assessment Wizard for this item"
+                        >
+                          <Sparkles size={15} color="var(--pine-primary)" /> AI Assess Item
                         </button>
                       </>
                     )}
@@ -4813,6 +4844,7 @@ export default function App() {
                 setAdminEditingItem(item);
                 await handleDeleteEditPhoto(photoId);
               }}
+              onAIAssessItem={(item) => setAiAssessmentItem(item)}
               onClose={() => setCurrentView('catalog')}
             />
           )}
@@ -7109,6 +7141,118 @@ export default function App() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* PHASE 3: ADD ITEM MODE CHOICE MODAL */}
+      {showAddChoiceModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+          <div style={{ background: '#fff', borderRadius: '16px', maxWidth: '520px', width: '100%', padding: '1.75rem', boxShadow: '0 20px 40px rgba(0,0,0,0.25)', border: '1px solid #e2e8f0' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ background: 'var(--pine-primary)', color: '#fff', padding: '6px', borderRadius: '8px' }}>
+                  <PlusCircle size={20} />
+                </div>
+                <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--pine-deep)' }}>Add New Estate Item</h3>
+              </div>
+              <button onClick={() => setShowAddChoiceModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}>
+                <X size={20} color="#64748b" />
+              </button>
+            </div>
+
+            <p style={{ margin: '0 0 1.25rem 0', fontSize: '0.88rem', color: '#64748b', lineHeight: '1.45' }}>
+              Choose how you want to catalog this item. Both modes create full inventory records.
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              {/* Option A: Standard Fast Capture */}
+              <div
+                onClick={() => {
+                  setShowAddChoiceModal(false);
+                  handleOpenCapture();
+                }}
+                style={{
+                  padding: '1rem 1.25rem',
+                  borderRadius: '10px',
+                  border: '2px solid #e2e8f0',
+                  cursor: 'pointer',
+                  background: '#f8fafc',
+                  transition: 'all 0.15s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px'
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--pine-primary)'; e.currentTarget.style.background = '#f0fdf4'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.background = '#f8fafc'; }}
+              >
+                <div style={{ background: '#e2e8f0', padding: '10px', borderRadius: '8px', flexShrink: 0 }}>
+                  <Camera size={24} color="#334155" />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 'bold', fontSize: '0.95rem', color: '#1e293b' }}>
+                    Standard Rapid Mode (Default)
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '2px' }}>
+                    Fast, 0-AI camera flow. Take photos, crop, and enter details offline or online.
+                  </div>
+                </div>
+              </div>
+
+              {/* Option B: AI-Assisted Assessment */}
+              <div
+                onClick={() => {
+                  setShowAddChoiceModal(false);
+                  setAiAssessmentItem({}); // empty object indicates new item
+                }}
+                style={{
+                  padding: '1rem 1.25rem',
+                  borderRadius: '10px',
+                  border: '2px solid #bbf7d0',
+                  cursor: 'pointer',
+                  background: '#f0fdf4',
+                  transition: 'all 0.15s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px'
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--pine-primary)'; e.currentTarget.style.background = '#dcfce7'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#bbf7d0'; e.currentTarget.style.background = '#f0fdf4'; }}
+              >
+                <div style={{ background: 'var(--pine-primary)', color: '#fff', padding: '10px', borderRadius: '8px', flexShrink: 0 }}>
+                  <Sparkles size={24} color="#fef08a" />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 'bold', fontSize: '0.95rem', color: 'var(--pine-deep)' }}>
+                    ✨ AI-Assisted Assessment Wizard
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: '#166534', marginTop: '2px' }}>
+                    Upload overview & detail shots. Generates curatorial description, era/origin, and estate valuation.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1.25rem' }}>
+              <button className="btn-outline" onClick={() => setShowAddChoiceModal(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PHASE 3: AI ASSESSMENT WIZARD MODAL / OVERLAY */}
+      {aiAssessmentItem && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.65)', zIndex: 10000, overflowY: 'auto', padding: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <AIAssessmentWizard
+            existingItem={aiAssessmentItem.id ? aiAssessmentItem : null}
+            threshold={normalizationThreshold}
+            onClose={() => setAiAssessmentItem(null)}
+            onSuccess={(savedItem) => {
+              setAiAssessmentItem(null);
+              fetchItems();
+            }}
+          />
         </div>
       )}
     </div>
