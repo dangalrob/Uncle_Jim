@@ -944,6 +944,7 @@ export default function AdminReviewMode({
           onRestorePhoto={onRestorePhoto}
           onSetPrimaryPhoto={onSetPrimaryPhoto}
           onDeletePhoto={onDeletePhoto}
+          onAIAssessItem={onAIAssessItem}
           onPrevious={() => {
             if (currentDrillDownIndex > 0) {
               setDrillDownItemId(filteredItems[currentDrillDownIndex - 1].id);
@@ -1145,6 +1146,7 @@ function DrillDownModal({
   onPrevious,
   onNext,
   onSaveAndNext,
+  onAIAssessItem,
   onClose,
   onViewFullRes
 }) {
