@@ -214,6 +214,16 @@ async function initDatabase() {
     db.run(`ALTER TABLE items ADD COLUMN assessment_status TEXT DEFAULT 'not_started'`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN normalization_status TEXT DEFAULT 'not_reviewed'`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN legacy_assessment_notes TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN research_level TEXT DEFAULT 'UNASSESSED'`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN threshold_status TEXT DEFAULT 'unknown'`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN identification_confidence TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN value_confidence TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN acquisition_context TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN jim_connection_type TEXT DEFAULT 'UNKNOWN'`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN jim_connection_notes TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN legacy_significance TEXT DEFAULT 'none'`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN legacy_significance_reason TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN verification_needed TEXT`, () => {});
 
     // 2. Estates Table Additions (Configurable distribution threshold)
     db.run(`ALTER TABLE estates ADD COLUMN distribution_threshold_value REAL DEFAULT 100.0`, () => {});
@@ -291,6 +301,18 @@ async function initDatabase() {
     )`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_research_sources_item ON item_research_sources(item_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_research_sources_assessment ON item_research_sources(assessment_id)`);
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN website_or_org TEXT`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN original_url TEXT`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN listing_date TEXT`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN source_date TEXT`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN asking_price REAL`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN sold_price REAL`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN currency TEXT DEFAULT 'USD'`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN status TEXT`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN relevance TEXT`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN used_for TEXT`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN date_accessed TEXT`, () => {});
+    db.run(`ALTER TABLE item_research_sources ADD COLUMN notes TEXT`, () => {});
 
     // 8. New Table: Travel & Voyage Connections (Distinguishes proven vs possible travel overlap)
     db.run(`CREATE TABLE IF NOT EXISTS item_travel_connections (
@@ -2984,6 +3006,7 @@ app.get('/api/admin/normalize/items', authenticateToken, requireRole(['admin']),
 app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const { itemId } = req.params;
+    const { overrideResearchLevel } = req.body || {};
     const estateId = req.user.estate_id;
 
     const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
@@ -2991,7 +3014,7 @@ app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(
 
     // Pre-extraction safeguard: Check if a baseline snapshot already exists
     let existingBaseline = await dbGet(
-      `SELECT id FROM item_legacy_snapshots WHERE item_id = ? AND snapshot_type = 'PRE_NORMALIZATION_BASELINE'`,
+      `SELECT * FROM item_legacy_snapshots WHERE item_id = ? AND snapshot_type = 'PRE_NORMALIZATION_BASELINE' ORDER BY created_at ASC LIMIT 1`,
       [itemId]
     );
 
@@ -3029,8 +3052,29 @@ app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(
       );
     }
 
-    // Run extraction service (Gemini API or fallback deterministic heuristic)
-    const proposed = await extractLegacyData(item, process.env.GEMINI_API_KEY);
+    // Retrieve approved research sources for evidence context
+    const researchSources = await dbAll(
+      `SELECT * FROM item_research_sources WHERE item_id = ? ORDER BY created_at DESC`,
+      [itemId]
+    );
+
+    // Assemble rich evidence bundle to prevent recursive normalization of old AI prose
+    const isRenormalization = Boolean(existingBaseline) || item.normalization_status === 'normalized' || Boolean(item.legacy_assessment_notes);
+    const evidenceBundle = {
+      item,
+      baseline: existingBaseline || null,
+      researchSources: researchSources || [],
+      isRenormalization,
+      evidenceSources: {
+        hasBaseline: Boolean(existingBaseline),
+        hasApprovedFacts: Boolean(item.maker || item.dimensions || item.materials || item.origin || item.era),
+        hasResearchSources: Boolean(researchSources && researchSources.length > 0),
+        isRenormalization
+      }
+    };
+
+    // Run extraction service with structured evidence bundle
+    const proposed = await extractLegacyData(evidenceBundle, process.env.GEMINI_API_KEY, overrideResearchLevel);
 
     // Check estate distribution threshold ($100 default)
     const estate = await dbGet(`SELECT distribution_threshold_value FROM estates WHERE id = ?`, [estateId]);
@@ -3038,13 +3082,14 @@ app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(
     const highVal = proposed.estimatedValueHigh || proposed.estimatedValueLow || 0;
     const exceedsThreshold = highVal >= threshold;
 
-    // Return proposed extraction and baseline information without modifying items table
+    // Return proposed extraction, baseline information, and evidence sources metadata
     res.json({
       success: true,
       snapshotId,
       createdSnapshot,
       threshold,
       exceedsThreshold,
+      evidenceSources: evidenceBundle.evidenceSources,
       original: {
         id: item.id,
         title: item.title,
@@ -3063,7 +3108,17 @@ app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(
         estimated_value_high: item.estimated_value_high,
         distribution_value: item.distribution_value,
         counts_against_distribution: item.counts_against_distribution,
-        value_basis: item.value_basis
+        value_basis: item.value_basis,
+        research_level: item.research_level || 'UNASSESSED',
+        threshold_status: item.threshold_status || 'unknown',
+        identification_confidence: item.identification_confidence,
+        value_confidence: item.value_confidence,
+        acquisition_context: item.acquisition_context,
+        jim_connection_type: item.jim_connection_type || 'UNKNOWN',
+        jim_connection_notes: item.jim_connection_notes,
+        legacy_significance: item.legacy_significance || 'none',
+        legacy_significance_reason: item.legacy_significance_reason,
+        verification_needed: item.verification_needed
       },
       proposed
     });
@@ -3078,7 +3133,7 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
   try {
     const { itemId } = req.params;
     const estateId = req.user.estate_id;
-    const { approvedFields, snapshotId, fullProposedPayload } = req.body;
+    const { approvedFields, snapshotId, fullProposedPayload, researchSources } = req.body;
 
     if (!approvedFields) {
       return res.status(400).json({ error: 'approvedFields object is required' });
@@ -3144,7 +3199,18 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
     const distributionValue = approvedFields.distribution_value !== undefined ? (parseFloat(approvedFields.distribution_value) || null) : currentItem.distribution_value;
     const countsAgainstDist = approvedFields.counts_against_distribution !== undefined ? (approvedFields.counts_against_distribution ? 1 : 0) : currentItem.counts_against_distribution;
 
-    const assessmentConfidence = approvedFields.assessment_confidence || currentItem.assessment_confidence || 'MEDIUM';
+    const researchLevel = approvedFields.research_level || currentItem.research_level || 'BASIC';
+    const thresholdStatus = approvedFields.threshold_status || currentItem.threshold_status || 'unknown';
+    const identificationConfidence = approvedFields.identification_confidence || currentItem.identification_confidence || 'MEDIUM';
+    const valueConfidence = approvedFields.value_confidence || currentItem.value_confidence || 'LOW';
+    const acquisitionContext = approvedFields.acquisition_context !== undefined ? approvedFields.acquisition_context : currentItem.acquisition_context;
+    const jimConnectionType = approvedFields.jim_connection_type || currentItem.jim_connection_type || 'UNKNOWN';
+    const jimConnectionNotes = approvedFields.jim_connection_notes !== undefined ? approvedFields.jim_connection_notes : currentItem.jim_connection_notes;
+    const legacySignificance = approvedFields.legacy_significance || currentItem.legacy_significance || 'none';
+    const legacySignificanceReason = approvedFields.legacy_significance_reason !== undefined ? approvedFields.legacy_significance_reason : currentItem.legacy_significance_reason;
+    const verificationNeeded = approvedFields.verification_needed !== undefined ? approvedFields.verification_needed : currentItem.verification_needed;
+
+    const assessmentConfidence = identificationConfidence || approvedFields.assessment_confidence || currentItem.assessment_confidence || 'MEDIUM';
     const confidenceReason = approvedFields.confidence_reason || currentItem.confidence_reason || null;
     const appraisalRecommended = approvedFields.appraisal_recommended ? 1 : 0;
     const appraisalReason = approvedFields.appraisal_reason || null;
@@ -3171,6 +3237,16 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
         confidence_reason = ?,
         appraisal_recommended = ?,
         appraisal_reason = ?,
+        research_level = ?,
+        threshold_status = ?,
+        identification_confidence = ?,
+        value_confidence = ?,
+        acquisition_context = ?,
+        jim_connection_type = ?,
+        jim_connection_notes = ?,
+        legacy_significance = ?,
+        legacy_significance_reason = ?,
+        verification_needed = ?,
         legacy_assessment_notes = ?,
         special_handling_notes = '',
         normalization_status = 'normalized',
@@ -3198,6 +3274,16 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
       confidenceReason,
       appraisalRecommended,
       appraisalReason,
+      researchLevel,
+      thresholdStatus,
+      identificationConfidence,
+      valueConfidence,
+      acquisitionContext,
+      jimConnectionType,
+      jimConnectionNotes,
+      legacySignificance,
+      legacySignificanceReason,
+      verificationNeeded,
       legacyArchiveNotes,
       itemId,
       estateId
@@ -3239,6 +3325,44 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
       })
     ]);
 
+    // Persist structured research sources
+    const sourcesToSave = researchSources || approvedFields.research_sources || [];
+    if (Array.isArray(sourcesToSave) && sourcesToSave.length > 0) {
+      for (const s of sourcesToSave) {
+        const sourceId = s.id && !String(s.id).startsWith('src_') ? s.id : ('src_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6));
+        await dbRun(`
+          INSERT INTO item_research_sources (
+            id, assessment_id, item_id, source_name, source_type, website_or_org, title, price, asking_price, sold_price,
+            currency, status, sale_date, listing_date, source_date, url, original_url, relevance_notes, relevance,
+            used_for, date_accessed, notes, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `, [
+          sourceId,
+          historyId,
+          itemId,
+          s.websiteOrOrg || s.website_or_org || s.source_name || 'Web Reference',
+          s.sourceType || s.source_type || 'General Web Reference',
+          s.websiteOrOrg || s.website_or_org || null,
+          s.title || null,
+          s.soldPrice || s.sold_price || s.askingPrice || s.asking_price || s.price || null,
+          s.askingPrice || s.asking_price || null,
+          s.soldPrice || s.sold_price || null,
+          s.currency || 'USD',
+          s.status || null,
+          s.listingDate || s.listing_date || s.sourceDate || s.source_date || s.sale_date || null,
+          s.listingDate || s.listing_date || s.sourceDate || s.source_date || s.sale_date || null,
+          s.sourceDate || s.source_date || s.listingDate || s.listing_date || s.sale_date || null,
+          s.url || s.originalUrl || s.original_url || null,
+          s.originalUrl || s.original_url || s.url || null,
+          s.relevance || s.relevance_notes || s.notes || null,
+          s.relevance || null,
+          s.usedFor || s.used_for || null,
+          s.dateAccessed || s.date_accessed || new Date().toISOString().split('T')[0],
+          s.notes || null
+        ]);
+      }
+    }
+
     // Audit log
     await logAudit(
       estateId,
@@ -3266,6 +3390,21 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
   } catch (err) {
     console.error('Approve normalization error:', err);
     res.status(500).json({ error: 'Failed to approve normalization: ' + err.message });
+  }
+});
+
+// Endpoint: Fetch Research Sources for an item
+app.get('/api/items/:id/research-sources', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const sources = await dbAll(
+      `SELECT * FROM item_research_sources WHERE item_id = ? ORDER BY created_at DESC`,
+      [id]
+    );
+    res.json({ sources: sources || [] });
+  } catch (err) {
+    console.error('Fetch research sources error:', err);
+    res.status(500).json({ error: 'Failed to fetch research sources' });
   }
 });
 
