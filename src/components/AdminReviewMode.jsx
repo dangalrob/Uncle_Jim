@@ -4,7 +4,7 @@ import {
   ArrowLeft, ArrowRight, Save, Check, AlertCircle, 
   ExternalLink, ZoomIn, X, ChevronLeft, ChevronRight,
   Search, Filter, CheckCircle2, RotateCcw, Crop, Star,
-  Trash2, Image, Layers, Sparkles, Building2
+  Trash2, Image, Layers, Sparkles, Building2, Lock, Unlock, Loader2
 } from 'lucide-react';
 
 /**
@@ -42,7 +42,11 @@ export function renderTextWithLinks(text) {
 export default function AdminReviewMode({
   items = [],
   categories = [],
+  users = [],
   onSaveItem,
+  onAssignItem,
+  onLockAssignment,
+  onUnlockAssignment,
   onReleaseItem,
   onUnreleaseItem,
   onCropPhoto,
@@ -237,6 +241,83 @@ export default function AdminReviewMode({
     }
   };
 
+  // Helper to render user options for Assigned To dropdown:
+  // Active users + TBD + current assignee (even if inactive)
+  const renderUserOptions = (item) => {
+    const activeUsers = users.filter(u => u.is_active !== 0);
+    const isCurrentAssigneeInactive = item.assigned_to_user_id && !activeUsers.some(u => u.id === item.assigned_to_user_id);
+    const inactiveAssignee = isCurrentAssigneeInactive ? users.find(u => u.id === item.assigned_to_user_id) : null;
+
+    return (
+      <>
+        <option value="">— Unassigned —</option>
+        <option value="tbd">TBD</option>
+        {activeUsers.map(u => (
+          <option key={u.id} value={u.id}>{u.name}</option>
+        ))}
+        {inactiveAssignee && (
+          <option key={inactiveAssignee.id} value={inactiveAssignee.id}>{inactiveAssignee.name} (Inactive)</option>
+        )}
+      </>
+    );
+  };
+
+  // Inline table assignment save handler
+  const handleInlineAssign = async (item, selectedValue) => {
+    const itemId = item.id;
+    if (item.is_locked === 1) {
+      alert("This assignment is locked. Please unlock it in item details before making changes.");
+      return;
+    }
+
+    setRowSaveStates(prev => ({
+      ...prev,
+      [itemId]: { status: 'saving' }
+    }));
+
+    try {
+      let recipientUserId = null;
+      let destinationType = null;
+      let destinationName = null;
+
+      if (selectedValue === 'tbd') {
+        destinationType = 'tbd';
+        destinationName = 'TBD';
+      } else if (selectedValue) {
+        recipientUserId = selectedValue;
+        destinationType = 'family';
+        const userObj = users.find(u => u.id === selectedValue);
+        destinationName = userObj ? userObj.name : null;
+      }
+
+      if (onAssignItem) {
+        await onAssignItem(itemId, recipientUserId, destinationType, destinationName);
+      }
+
+      setRowSaveStates(prev => ({
+        ...prev,
+        [itemId]: { status: 'saved' }
+      }));
+
+      setTimeout(() => {
+        setRowSaveStates(prev => {
+          if (prev[itemId]?.status === 'saved') {
+            const copy = { ...prev };
+            delete copy[itemId];
+            return copy;
+          }
+          return prev;
+        });
+      }, 2000);
+    } catch (err) {
+      console.error("Inline assignment failed:", err);
+      setRowSaveStates(prev => ({
+        ...prev,
+        [itemId]: { status: 'error', errorMsg: err.message || 'Save failed' }
+      }));
+    }
+  };
+
   // Toggle sort direction or set field
   const handleSort = (field) => {
     if (sortField === field) {
@@ -409,7 +490,8 @@ export default function AdminReviewMode({
               <th style={{ padding: '8px 10px', cursor: 'pointer', width: '135px' }} onClick={() => handleSort('destination')}>
                 Destination {sortField === 'destination' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 10px', width: '150px' }}>Institutional</th>
+              <th style={{ padding: '8px 10px', width: '130px' }}>Institutional</th>
+              <th style={{ padding: '8px 10px', minWidth: '155px' }}>Assigned To</th>
               <th style={{ padding: '8px 10px', cursor: 'pointer', width: '150px' }} onClick={() => handleSort('status')}>
                 Family Review {sortField === 'status' && (sortAsc ? '▲' : '▼')}
               </th>
@@ -422,7 +504,7 @@ export default function AdminReviewMode({
           <tbody>
             {filteredItems.length === 0 ? (
               <tr>
-                <td colSpan={9} style={{ padding: '3rem', textAlign: 'center', color: '#6b7280' }}>
+                <td colSpan={10} style={{ padding: '3rem', textAlign: 'center', color: '#6b7280' }}>
                   No inventory items match the current search or filter.
                 </td>
               </tr>
@@ -609,6 +691,34 @@ export default function AdminReviewMode({
                         <option value="Maritime Museum">Maritime Museum</option>
                         <option value="Library">Library</option>
                       </select>
+                    </td>
+
+                    {/* Assigned To (Inline Select with Live Autosave) */}
+                    <td style={{ padding: '6px 10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <select
+                          value={item.destination_type === 'tbd' || item.assigned_to_name === 'TBD' ? 'tbd' : (item.assigned_to_user_id || '')}
+                          disabled={item.is_locked === 1}
+                          onChange={(e) => handleInlineAssign(item, e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '4px 6px',
+                            fontSize: '0.82rem',
+                            borderRadius: '4px',
+                            border: '1px solid #d1d5db',
+                            background: item.assigned_to_user_id ? '#f0fdf4' : item.destination_type === 'tbd' ? '#fef3c7' : '#fff',
+                            color: item.assigned_to_user_id ? '#166534' : item.destination_type === 'tbd' ? '#92400e' : '#374151',
+                            fontWeight: (item.assigned_to_user_id || item.destination_type === 'tbd') ? '600' : 'normal',
+                            cursor: item.is_locked === 1 ? 'not-allowed' : 'pointer'
+                          }}
+                          title={item.is_locked === 1 ? "Assignment is locked. Click item to unlock." : "Assign to person or TBD"}
+                        >
+                          {renderUserOptions(item)}
+                        </select>
+                        {item.is_locked === 1 && (
+                          <Lock size={13} color="#991b1b" title="Locked / Finalized" style={{ flexShrink: 0 }} />
+                        )}
+                      </div>
                     </td>
 
                     {/* Family Review Status (Release / Unrelease) */}
@@ -896,6 +1006,35 @@ export default function AdminReviewMode({
                   </div>
                 </div>
 
+                {/* Assigned To in Mobile Card */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2px' }}>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 'bold', color: '#166534' }}>🎯 Assigned To</label>
+                    {item.is_locked === 1 && (
+                      <span style={{ fontSize: '0.68rem', color: '#991b1b', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+                        <Lock size={10} /> Locked
+                      </span>
+                    )}
+                  </div>
+                  <select
+                    value={item.destination_type === 'tbd' || item.assigned_to_name === 'TBD' ? 'tbd' : (item.assigned_to_user_id || '')}
+                    disabled={item.is_locked === 1}
+                    onChange={(e) => handleInlineAssign(item, e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '6px',
+                      fontSize: '0.84rem',
+                      borderRadius: '6px',
+                      border: '1px solid #d1d5db',
+                      background: item.assigned_to_user_id ? '#f0fdf4' : item.destination_type === 'tbd' ? '#fef3c7' : '#fff',
+                      color: item.assigned_to_user_id ? '#166534' : item.destination_type === 'tbd' ? '#92400e' : '#374151',
+                      fontWeight: (item.assigned_to_user_id || item.destination_type === 'tbd') ? '600' : 'normal'
+                    }}
+                  >
+                    {renderUserOptions(item)}
+                  </select>
+                </div>
+
                 {/* Footer row: Release toggle & Edit Details */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '0.35rem', borderTop: '1px solid #f3f4f6' }}>
                   <div>
@@ -935,9 +1074,13 @@ export default function AdminReviewMode({
         <DrillDownModal
           item={currentDrillDownItem}
           categories={categories}
+          users={users}
           currentIndex={currentDrillDownIndex}
           totalInFilter={filteredItems.length}
           onSave={onSaveItem}
+          onAssignItem={onAssignItem}
+          onLockAssignment={onLockAssignment}
+          onUnlockAssignment={onUnlockAssignment}
           onRelease={onReleaseItem}
           onUnrelease={onUnreleaseItem}
           onCropPhoto={onCropPhoto}
@@ -1134,9 +1277,13 @@ export default function AdminReviewMode({
 function DrillDownModal({
   item,
   categories,
+  users = [],
   currentIndex,
   totalInFilter,
   onSave,
+  onAssignItem,
+  onLockAssignment,
+  onUnlockAssignment,
   onRelease,
   onUnrelease,
   onCropPhoto,
@@ -1172,6 +1319,7 @@ function DrillDownModal({
   const [isSaving, setIsSaving] = useState(false);
   const [saveToast, setSaveToast] = useState(null);
   const [selectedPhotoForTools, setSelectedPhotoForTools] = useState(null);
+  const autoSaveTimerRef = useRef(null);
 
   // Sync item data into form
   useEffect(() => {
@@ -1198,12 +1346,114 @@ function DrillDownModal({
     }
   }, [item?.id, categories]);
 
-  const handleChange = (field, val) => {
-    setFormData(prev => ({ ...prev, [field]: val }));
+  // Clean up timer on unmount
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  }, []);
+
+  const autoSaveFormData = async (dataToSave) => {
+    setIsSaving(true);
+    setSaveToast('Saving...');
+    try {
+      await onSave(item.id, dataToSave);
+      setIsDirty(false);
+      setSaveToast('✓ Saved');
+      setTimeout(() => {
+        setSaveToast(prev => prev === '✓ Saved' ? null : prev);
+      }, 2000);
+    } catch (err) {
+      console.error("Auto save failed:", err);
+      setSaveToast('Save failed — Retry');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleFieldChange = (field, val, isDiscrete = false) => {
+    const updated = { ...formData, [field]: val };
+    setFormData(updated);
     setIsDirty(true);
+
+    if (isDiscrete) {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      autoSaveFormData(updated);
+    } else {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = setTimeout(() => {
+        autoSaveFormData(updated);
+      }, 800);
+    }
+  };
+
+  const handleFieldBlur = () => {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    if (isDirty) {
+      autoSaveFormData(formData);
+    }
+  };
+
+  const handleModalAssign = async (val) => {
+    if (item.is_locked === 1) {
+      alert("This assignment is locked. Please unlock it before making changes.");
+      return;
+    }
+    setIsSaving(true);
+    setSaveToast('Saving...');
+    try {
+      let recipientUserId = null;
+      let destinationType = null;
+      let destinationName = null;
+
+      if (val === 'tbd') {
+        destinationType = 'tbd';
+        destinationName = 'TBD';
+      } else if (val) {
+        recipientUserId = val;
+        destinationType = 'family';
+        const u = users.find(usr => usr.id === val);
+        destinationName = u ? u.name : null;
+      }
+
+      if (onAssignItem) {
+        await onAssignItem(item.id, recipientUserId, destinationType, destinationName);
+      }
+      setSaveToast('✓ Saved');
+      setTimeout(() => {
+        setSaveToast(prev => prev === '✓ Saved' ? null : prev);
+      }, 2000);
+    } catch (err) {
+      console.error("Assignment save failed:", err);
+      setSaveToast('Save failed — Retry');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleModalToggleLock = async () => {
+    setIsSaving(true);
+    setSaveToast('Saving...');
+    try {
+      if (item.is_locked === 1) {
+        if (onUnlockAssignment) await onUnlockAssignment(item.id);
+      } else {
+        if (onLockAssignment) await onLockAssignment(item.id);
+      }
+      setSaveToast('✓ Saved');
+      setTimeout(() => {
+        setSaveToast(prev => prev === '✓ Saved' ? null : prev);
+      }, 2000);
+    } catch (err) {
+      console.error("Lock toggle failed:", err);
+      setSaveToast('Save failed — Retry');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleSave = async (advanceNext = false) => {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     setIsSaving(true);
     try {
       if (advanceNext) {
@@ -1211,12 +1461,12 @@ function DrillDownModal({
       } else {
         await onSave(item.id, formData);
         setIsDirty(false);
-        setSaveToast('Saved ✓');
+        setSaveToast('✓ Saved');
         setTimeout(() => setSaveToast(null), 2500);
       }
     } catch (err) {
       console.error(err);
-      setSaveToast('⚠️ Save failed');
+      setSaveToast('Save failed — Retry');
     } finally {
       setIsSaving(false);
     }
@@ -1324,16 +1574,32 @@ function DrillDownModal({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-            {isDirty && (
+            {saveToast ? (
+              <span 
+                onClick={() => saveToast.includes('Retry') && autoSaveFormData(formData)}
+                style={{ 
+                  fontSize: '0.8rem', 
+                  color: saveToast === 'Saving...' ? '#0284c7' : saveToast.includes('✓') ? '#15803d' : '#b91c1c', 
+                  background: saveToast === 'Saving...' ? '#f0f9ff' : saveToast.includes('✓') ? '#f0fdf4' : '#fef2f2',
+                  border: `1px solid ${saveToast === 'Saving...' ? '#bae6fd' : saveToast.includes('✓') ? '#bbf7d0' : '#fecaca'}`,
+                  padding: '0.25rem 0.65rem',
+                  borderRadius: '12px',
+                  fontWeight: 'bold',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  cursor: saveToast.includes('Retry') ? 'pointer' : 'default'
+                }}
+                title={saveToast.includes('Retry') ? 'Click to retry save' : ''}
+              >
+                {saveToast === 'Saving...' && <Loader2 size={12} className="animate-spin" />}
+                {saveToast}
+              </span>
+            ) : isDirty ? (
               <span style={{ fontSize: '0.78rem', color: '#b45309', fontWeight: 'bold' }}>
                 • Unsaved edits
               </span>
-            )}
-            {saveToast && (
-              <span style={{ fontSize: '0.8rem', color: saveToast.includes('✓') ? '#15803d' : '#b91c1c', fontWeight: 'bold' }}>
-                {saveToast}
-              </span>
-            )}
+            ) : null}
 
             {onAIAssessItem && (
               <button
@@ -1396,7 +1662,8 @@ function DrillDownModal({
               <input
                 type="text"
                 value={formData.title}
-                onChange={(e) => handleChange('title', e.target.value)}
+                onChange={(e) => handleFieldChange('title', e.target.value)}
+                onBlur={handleFieldBlur}
                 placeholder="e.g. Hand-Carved Teak Ship Wheel"
                 style={{ width: '100%', padding: '0.55rem 0.75rem', fontSize: '0.95rem', fontWeight: 'bold', borderRadius: '6px', border: '1px solid #d1d5db' }}
               />
@@ -1407,7 +1674,7 @@ function DrillDownModal({
                 <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', marginBottom: '3px' }}>Category *</label>
                 <select
                   value={formData.categoryId}
-                  onChange={(e) => handleChange('categoryId', e.target.value)}
+                  onChange={(e) => handleFieldChange('categoryId', e.target.value, true)}
                   style={{ width: '100%', padding: '0.5rem', fontSize: '0.86rem', borderRadius: '6px', border: '1px solid #d1d5db', background: '#fff' }}
                 >
                   <option value="">-- Select Category --</option>
@@ -1422,7 +1689,8 @@ function DrillDownModal({
                 <input
                   type="text"
                   value={formData.value}
-                  onChange={(e) => handleChange('value', e.target.value)}
+                  onChange={(e) => handleFieldChange('value', e.target.value)}
+                  onBlur={handleFieldBlur}
                   placeholder="e.g. $150 - $250 or $300"
                   style={{ width: '100%', padding: '0.5rem 0.65rem', fontSize: '0.86rem', borderRadius: '6px', border: '1px solid #d1d5db' }}
                 />
@@ -1433,7 +1701,8 @@ function DrillDownModal({
                 <input
                   type="text"
                   value={formData.era}
-                  onChange={(e) => handleChange('era', e.target.value)}
+                  onChange={(e) => handleFieldChange('era', e.target.value)}
+                  onBlur={handleFieldBlur}
                   placeholder="e.g. c. 1940s, Victorian, Mid-Century"
                   style={{ width: '100%', padding: '0.5rem 0.65rem', fontSize: '0.86rem', borderRadius: '6px', border: '1px solid #d1d5db' }}
                 />
@@ -1441,10 +1710,10 @@ function DrillDownModal({
             </div>
           </div>
 
-          {/* SECTION 2: CLASSIFICATION & STATUS */}
+          {/* SECTION 2: CLASSIFICATION, DISPOSITION & ASSIGNMENT */}
           <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '1rem' }}>
             <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.9rem', color: 'var(--pine-deep)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              2. Classification & Status
+              2. Classification, Disposition & Assignment
             </h4>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem', marginBottom: '0.75rem' }}>
@@ -1452,7 +1721,7 @@ function DrillDownModal({
                 <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', marginBottom: '3px' }}>Condition</label>
                 <select
                   value={formData.condition}
-                  onChange={(e) => handleChange('condition', e.target.value)}
+                  onChange={(e) => handleFieldChange('condition', e.target.value, true)}
                   style={{ width: '100%', padding: '0.5rem', fontSize: '0.86rem', borderRadius: '6px', border: '1px solid #d1d5db', background: '#fff' }}
                 >
                   <option value="">Unspecified</option>
@@ -1470,14 +1739,15 @@ function DrillDownModal({
                 <input
                   type="text"
                   value={formData.dimensions}
-                  onChange={(e) => handleChange('dimensions', e.target.value)}
+                  onChange={(e) => handleFieldChange('dimensions', e.target.value)}
+                  onBlur={handleFieldBlur}
                   placeholder="e.g. 24 x 18 in, 8 lbs"
                   style={{ width: '100%', padding: '0.5rem 0.65rem', fontSize: '0.86rem', borderRadius: '6px', border: '1px solid #d1d5db' }}
                 />
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.2fr', gap: '0.85rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.2fr', gap: '0.85rem', marginBottom: '0.85rem' }}>
               {/* Destination Planning Field */}
               <div style={{ padding: '0.65rem', background: '#f8faf9', borderRadius: '6px', border: '1px solid #e5e7eb' }}>
                 <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 'bold', marginBottom: '4px' }}>
@@ -1485,7 +1755,7 @@ function DrillDownModal({
                 </label>
                 <select
                   value={formData.destination || 'undecided'}
-                  onChange={(e) => handleChange('destination', e.target.value)}
+                  onChange={(e) => handleFieldChange('destination', e.target.value, true)}
                   style={{ width: '100%', padding: '0.4rem', fontSize: '0.82rem', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff' }}
                 >
                   <option value="undecided">Undecided</option>
@@ -1504,7 +1774,7 @@ function DrillDownModal({
                 </label>
                 <select
                   value={formData.institutionalCandidate || ''}
-                  onChange={(e) => handleChange('institutionalCandidate', e.target.value)}
+                  onChange={(e) => handleFieldChange('institutionalCandidate', e.target.value, true)}
                   style={{ width: '100%', padding: '0.4rem', fontSize: '0.82rem', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff' }}
                 >
                   <option value="">-- Select Candidate --</option>
@@ -1528,7 +1798,7 @@ function DrillDownModal({
                     className="btn-outline"
                     onClick={async () => {
                       await onUnrelease(item.id);
-                      handleChange('status', 'draft');
+                      handleFieldChange('status', 'draft', true);
                     }}
                     style={{ fontSize: '0.78rem', color: '#b91c1c', borderColor: '#fca5a5', padding: '0.35rem 0.65rem' }}
                   >
@@ -1539,13 +1809,86 @@ function DrillDownModal({
                     className="btn-green"
                     onClick={async () => {
                       await onRelease(item.id);
-                      handleChange('status', 'released');
+                      handleFieldChange('status', 'released', true);
                     }}
                     style={{ fontSize: '0.78rem', padding: '0.35rem 0.75rem', fontWeight: 'bold' }}
                   >
                     🚀 Release
                   </button>
                 )}
+              </div>
+            </div>
+
+            {/* DEDICATED ESTATE ASSIGNMENT & LOCKING CONTROL */}
+            <div style={{ padding: '0.85rem', background: '#f0fdf4', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#166534', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    🎯 Assigned To (Final Estate Disposition)
+                  </span>
+                  <span style={{ fontSize: '0.74rem', color: '#4b5563' }}>
+                    Record final family recipient, institution, or TBD.
+                  </span>
+                </div>
+
+                {/* Lock Status & Lock/Unlock Button */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  {item.is_locked === 1 ? (
+                    <>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#991b1b', background: '#fee2e2', border: '1px solid #fca5a5', padding: '0.2rem 0.55rem', borderRadius: '12px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                        <Lock size={12} /> Finalized / Locked
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-outline"
+                        onClick={handleModalToggleLock}
+                        style={{ fontSize: '0.74rem', padding: '0.25rem 0.55rem', borderRadius: '4px' }}
+                        title="Unlock assignment so it can be edited"
+                      >
+                        <Unlock size={12} style={{ marginRight: '3px' }} /> Unlock
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#15803d', background: '#dcfce7', border: '1px solid #86efac', padding: '0.2rem 0.55rem', borderRadius: '12px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                        <Unlock size={12} /> Editable
+                      </span>
+                      {(item.assigned_to_user_id || item.destination_type === 'tbd') && (
+                        <button
+                          type="button"
+                          className="btn-outline"
+                          onClick={handleModalToggleLock}
+                          style={{ fontSize: '0.74rem', padding: '0.25rem 0.55rem', borderRadius: '4px', borderColor: '#86efac' }}
+                          title="Lock and finalize assignment"
+                        >
+                          <Lock size={12} style={{ marginRight: '3px' }} /> Finalize & Lock
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <select
+                  value={item.destination_type === 'tbd' || item.assigned_to_name === 'TBD' ? 'tbd' : (item.assigned_to_user_id || '')}
+                  disabled={item.is_locked === 1}
+                  onChange={(e) => handleModalAssign(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '0.55rem',
+                    fontSize: '0.88rem',
+                    fontWeight: 'bold',
+                    borderRadius: '6px',
+                    border: '1px solid #86efac',
+                    background: item.is_locked === 1 ? '#f3f4f6' : '#fff',
+                    color: item.is_locked === 1 ? '#6b7280' : '#166534',
+                    cursor: item.is_locked === 1 ? 'not-allowed' : 'pointer'
+                  }}
+                  title={item.is_locked === 1 ? "Assignment is locked. Click Unlock to make changes." : "Assign to person or TBD"}
+                >
+                  {renderUserOptions(item)}
+                </select>
               </div>
             </div>
           </div>
@@ -1713,7 +2056,8 @@ function DrillDownModal({
 
             <textarea
               value={formData.description}
-              onChange={(e) => handleChange('description', e.target.value)}
+              onChange={(e) => handleFieldChange('description', e.target.value)}
+              onBlur={handleFieldBlur}
               placeholder="Verified item description, history, markings, and condition notes..."
               rows={16}
               style={{
@@ -1761,7 +2105,8 @@ function DrillDownModal({
             </h4>
             <textarea
               value={formData.story}
-              onChange={(e) => handleChange('story', e.target.value)}
+              onChange={(e) => handleFieldChange('story', e.target.value)}
+              onBlur={handleFieldBlur}
               placeholder="Family memories, recollections, stories Uncle Jim told, or original acquisition context..."
               rows={6}
               style={{

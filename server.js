@@ -218,6 +218,10 @@ async function initDatabase() {
     // 2. Estates Table Additions (Configurable distribution threshold)
     db.run(`ALTER TABLE estates ADD COLUMN distribution_threshold_value REAL DEFAULT 100.0`, () => {});
 
+    // 2b. Users Table Additions (Active status and Admin notes)
+    db.run(`ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1`, () => {});
+    db.run(`ALTER TABLE users ADD COLUMN notes TEXT`, () => {});
+
     // 3. Item Stories Additions (Museum Curation Flags)
     db.run(`ALTER TABLE item_stories ADD COLUMN is_curated_for_museum INTEGER DEFAULT 0`, () => {});
     db.run(`ALTER TABLE item_stories ADD COLUMN curator_notes TEXT`, () => {});
@@ -844,7 +848,7 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
 app.get('/api/admin/users', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const users = await dbAll(
-      `SELECT id, estate_id, name, email, role, phone, address, created_at
+      `SELECT id, estate_id, name, email, role, phone, address, is_active, notes, created_at
        FROM users
        WHERE estate_id = ?
        ORDER BY CASE WHEN role = 'admin' THEN 0 ELSE 1 END, name ASC`,
@@ -857,26 +861,128 @@ app.get('/api/admin/users', authenticateToken, requireRole(['admin']), async (re
   }
 });
 
-// Admin: Reset a family member's password to default 'Lombardi'
+// Admin: Add a new user
+app.post('/api/admin/users', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { name, email, role, password, notes, is_active } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: "Name is required." });
+    if (!email || !email.trim()) return res.status(400).json({ error: "Email is required." });
+    if (!password || !password.trim()) return res.status(400).json({ error: "Password is required." });
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const existing = await dbGet(`SELECT id FROM users WHERE email = ?`, [normalizedEmail]);
+    if (existing) {
+      return res.status(400).json({ error: "A user with this email address already exists." });
+    }
+
+    const validRoles = ['admin', 'reviewer', 'contributor', 'institution'];
+    const assignedRole = validRoles.includes(role) ? role : 'reviewer';
+    const activeStatus = (is_active === 0 || is_active === false) ? 0 : 1;
+
+    const passwordHash = await bcrypt.hash(password.trim(), 10);
+    const newUserId = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
+
+    await dbRun(
+      `INSERT INTO users (id, estate_id, name, email, password_hash, role, notes, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [newUserId, req.user.estate_id, name.trim(), normalizedEmail, passwordHash, assignedRole, notes ? notes.trim() : null, activeStatus]
+    );
+
+    logAudit(req.user.estate_id, req.user.id, 'CREATE_USER', 'users', newUserId, {
+      name: name.trim(),
+      email: normalizedEmail,
+      role: assignedRole,
+      is_active: activeStatus
+    });
+
+    res.json({
+      success: true,
+      user: {
+        id: newUserId,
+        estate_id: req.user.estate_id,
+        name: name.trim(),
+        email: normalizedEmail,
+        role: assignedRole,
+        notes: notes ? notes.trim() : null,
+        is_active: activeStatus
+      }
+    });
+  } catch (err) {
+    console.error("Create user error:", err);
+    res.status(500).json({ error: "Failed to create user." });
+  }
+});
+
+// Admin: Update an existing user
+app.put('/api/admin/users/:id', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const targetUserId = req.params.id;
+    const { name, email, role, notes, is_active } = req.body;
+
+    const targetUser = await dbGet(`SELECT * FROM users WHERE id = ? AND estate_id = ?`, [targetUserId, req.user.estate_id]);
+    if (!targetUser) return res.status(404).json({ error: "User not found." });
+
+    // Guard: Prevent deactivating your own logged-in account
+    if (targetUserId === req.user.id && (is_active === 0 || is_active === false)) {
+      return res.status(400).json({ error: "You cannot deactivate your own active admin account." });
+    }
+
+    const validRoles = ['admin', 'reviewer', 'contributor', 'institution'];
+    const updatedRole = role && validRoles.includes(role) ? role : targetUser.role;
+    const updatedName = name !== undefined && name !== null ? name.trim() : targetUser.name;
+    const updatedEmail = email !== undefined && email !== null ? email.trim().toLowerCase() : targetUser.email;
+    const updatedNotes = notes !== undefined ? (notes ? notes.trim() : null) : targetUser.notes;
+    const updatedActive = is_active !== undefined ? ((is_active === 0 || is_active === false) ? 0 : 1) : (targetUser.is_active !== undefined ? targetUser.is_active : 1);
+
+    if (updatedEmail !== targetUser.email) {
+      const emailConflict = await dbGet(`SELECT id FROM users WHERE email = ? AND id != ?`, [updatedEmail, targetUserId]);
+      if (emailConflict) return res.status(400).json({ error: "Another user already uses this email address." });
+    }
+
+    await dbRun(
+      `UPDATE users SET name = ?, email = ?, role = ?, notes = ?, is_active = ? WHERE id = ?`,
+      [updatedName, updatedEmail, updatedRole, updatedNotes, updatedActive, targetUserId]
+    );
+
+    logAudit(req.user.estate_id, req.user.id, 'UPDATE_USER', 'users', targetUserId, {
+      name: updatedName,
+      email: updatedEmail,
+      role: updatedRole,
+      is_active: updatedActive,
+      previousActive: targetUser.is_active
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Update user error:", err);
+    res.status(500).json({ error: "Failed to update user." });
+  }
+});
+
+// Admin: Reset/change a user's password
 app.post('/api/admin/users/:id/reset-password', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const targetUserId = req.params.id;
+    const { newPassword } = req.body;
 
     const targetUser = await dbGet(`SELECT * FROM users WHERE id = ? AND estate_id = ?`, [targetUserId, req.user.estate_id]);
     if (!targetUser) {
       return res.status(404).json({ error: "User not found." });
     }
 
-    // Security Guardrail: Protect Dan and Admin accounts from simple one-click reset
-    if (targetUser.role === 'admin' || targetUser.id === 'user_dan') {
+    // Protect Dan from being reset by other accounts
+    if (targetUser.id === 'user_dan' && req.user.id !== 'user_dan') {
       return res.status(403).json({
-        error: "Admin accounts cannot be reset with the family default reset. Admins must change their password deliberately using Change Password."
+        error: "Dan's primary admin account password cannot be reset by another user."
       });
     }
 
-    // Reset password to default 'Lombardi'
-    const defaultHash = await bcrypt.hash('Lombardi', 10);
-    await dbRun(`UPDATE users SET password_hash = ? WHERE id = ?`, [defaultHash, targetUser.id]);
+    const passwordToSet = newPassword && newPassword.trim() ? newPassword.trim() : 'Lombardi';
+    if (!passwordToSet) {
+      return res.status(400).json({ error: "A non-empty password is required." });
+    }
+
+    const passwordHash = await bcrypt.hash(passwordToSet, 10);
+    await dbRun(`UPDATE users SET password_hash = ? WHERE id = ?`, [passwordHash, targetUser.id]);
 
     // Record activity audit log (Never include the password itself)
     logAudit(req.user.estate_id, req.user.id, 'RESET_PASSWORD', 'users', targetUser.id, {
@@ -885,7 +991,7 @@ app.post('/api/admin/users/:id/reset-password', authenticateToken, requireRole([
 
     res.json({
       success: true,
-      message: `Password for ${targetUser.name} has been reset to default.`
+      message: `Password for ${targetUser.name} has been updated.`
     });
   } catch (err) {
     console.error("Reset password error:", err);
@@ -1051,7 +1157,9 @@ app.get('/api/items', authenticateToken, async (req, res) => {
              (SELECT GROUP_CONCAT(u.name, ', ') FROM interests int_sub JOIN users u ON int_sub.user_id = u.id WHERE int_sub.item_id = i.id AND int_sub.interest_level = 'interested') as interested_names,
              (SELECT recipient_user_id FROM assignments WHERE item_id = i.id) as assigned_to_user_id,
              (SELECT u.name FROM assignments a JOIN users u ON a.recipient_user_id = u.id WHERE a.item_id = i.id) as assigned_to_name,
-             (SELECT destination_name FROM assignments WHERE item_id = i.id) as destination_name
+             (SELECT destination_name FROM assignments WHERE item_id = i.id) as destination_name,
+             (SELECT destination_type FROM assignments WHERE item_id = i.id) as destination_type,
+             (SELECT is_locked FROM assignments WHERE item_id = i.id) as is_locked
       FROM items i
       LEFT JOIN categories c ON i.category_id = c.id
       WHERE i.estate_id = ?
@@ -1909,48 +2017,135 @@ app.get('/api/admin/interests', authenticateToken, requireRole(['admin']), async
 app.post('/api/items/:id/assign', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const itemId = req.params.id;
-    const { recipientUserId, destinationType, destinationName } = req.body;
+    let { recipientUserId, destinationType, destinationName, isLocked } = req.body;
 
-    const existing = await dbGet(`SELECT id FROM assignments WHERE item_id = ?`, [itemId]);
-    if (existing) {
-      await dbRun(`UPDATE assignments SET recipient_user_id = ?, destination_type = ?, destination_name = ?, is_locked = 1, assigned_by_user_id = ?, assigned_at = CURRENT_TIMESTAMP WHERE id = ?`, [
-        recipientUserId || null, destinationType || 'family', destinationName || null, req.user.id, existing.id
-      ]);
-    } else {
-      await dbRun(`INSERT INTO assignments (id, item_id, recipient_user_id, destination_type, destination_name, is_locked, assigned_by_user_id) VALUES (?, ?, ?, ?, ?, 1, ?)`, [
-        'assign_' + Date.now(), itemId, recipientUserId || null, destinationType || 'family', destinationName || null, req.user.id
-      ]);
+    const item = await dbGet(`SELECT id, title, status FROM items WHERE id = ? AND estate_id = ?`, [itemId, req.user.estate_id]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const existing = await dbGet(`
+      SELECT a.*, u.name as recipient_name 
+      FROM assignments a 
+      LEFT JOIN users u ON a.recipient_user_id = u.id 
+      WHERE a.item_id = ?
+    `, [itemId]);
+
+    if (existing && existing.is_locked === 1 && req.body.forceUnlock !== true) {
+      return res.status(400).json({ error: "Assignment is locked and finalized. Unlock it first to make changes." });
     }
 
-    await dbRun(`UPDATE items SET status = 'assigned' WHERE id = ? AND estate_id = ?`, [itemId, req.user.estate_id]);
+    const previousAssignee = existing
+      ? (existing.recipient_name || (existing.destination_type === 'tbd' ? 'TBD' : existing.destination_name) || 'Unassigned')
+      : 'Unassigned';
 
-    // Send confirmation email to recipient if family member
-    if (recipientUserId) {
-      const recipient = await dbGet(`SELECT email, name FROM users WHERE id = ?`, [recipientUserId]);
-      if (recipient) {
-        const item = await dbGet(`SELECT title FROM items WHERE id = ?`, [itemId]);
-        sendNotificationEmail(
-          recipient.email,
-          `An item from Uncle Jim's estate has been assigned to you`,
-          `Dear ${recipient.name},\n\nThe item "${item.title}" from Uncle Jim's estate has been assigned to you!\n\nYou can log in to view shipping and pickup details:\nhttp://localhost:3000/\n\nWarmly,\nDan & Frank`
+    let targetUserId = null;
+    let targetDestType = destinationType || 'family';
+    let targetDestName = destinationName || null;
+    let newStatus = 'assigned';
+
+    // Handle Unassigned
+    if (!recipientUserId || recipientUserId === 'unassigned' || recipientUserId === 'none') {
+      if (destinationType === 'tbd' || recipientUserId === 'tbd') {
+        targetUserId = null;
+        targetDestType = 'tbd';
+        targetDestName = 'TBD';
+      } else {
+        targetUserId = null;
+        targetDestType = 'undecided';
+        targetDestName = null;
+        newStatus = item.status === 'assigned' ? 'released' : item.status;
+      }
+    } else if (recipientUserId === 'tbd') {
+      targetUserId = null;
+      targetDestType = 'tbd';
+      targetDestName = 'TBD';
+    } else {
+      // Normal user assignment
+      const user = await dbGet(`SELECT id, name, email FROM users WHERE id = ? AND estate_id = ?`, [recipientUserId, req.user.estate_id]);
+      if (!user) return res.status(404).json({ error: "Assigned user not found" });
+      targetUserId = user.id;
+      targetDestType = 'family';
+      targetDestName = user.name;
+    }
+
+    // Default lock value is 0 (unlocked) unless explicitly specified
+    const lockVal = (isLocked !== undefined && isLocked !== null) ? (isLocked ? 1 : 0) : (existing ? existing.is_locked : 0);
+
+    if (existing) {
+      if (!targetUserId && targetDestType === 'undecided') {
+        await dbRun(`DELETE FROM assignments WHERE id = ?`, [existing.id]);
+      } else {
+        await dbRun(
+          `UPDATE assignments SET recipient_user_id = ?, destination_type = ?, destination_name = ?, is_locked = ?, assigned_by_user_id = ?, assigned_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [targetUserId, targetDestType, targetDestName, lockVal, req.user.id, existing.id]
         );
       }
+    } else if (targetUserId || targetDestType === 'tbd') {
+      await dbRun(
+        `INSERT INTO assignments (id, item_id, recipient_user_id, destination_type, destination_name, is_locked, assigned_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ['assign_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4), itemId, targetUserId, targetDestType, targetDestName, lockVal, req.user.id]
+      );
     }
 
-    logAudit(req.user.estate_id, req.user.id, 'ASSIGN_ITEM', 'items', itemId, { recipientUserId, destinationType, destinationName });
+    await dbRun(`UPDATE items SET status = ? WHERE id = ? AND estate_id = ?`, [newStatus, itemId, req.user.estate_id]);
 
+    const newAssignee = targetDestType === 'tbd' ? 'TBD' : (targetDestName || 'Unassigned');
+
+    logAudit(req.user.estate_id, req.user.id, 'ASSIGN_ITEM', 'items', itemId, {
+      itemId,
+      itemTitle: item.title,
+      previousAssignment: previousAssignee,
+      newAssignment: newAssignee,
+      changedBy: req.user.name,
+      timestamp: new Date().toISOString()
+    });
+
+    res.json({
+      success: true,
+      assignment: {
+        item_id: itemId,
+        recipient_user_id: targetUserId,
+        recipient_name: targetDestName,
+        destination_type: targetDestType,
+        destination_name: targetDestName,
+        is_locked: lockVal
+      },
+      status: newStatus
+    });
+  } catch (err) {
+    console.error("Failed to assign item:", err);
+    res.status(500).json({ error: "Failed to assign item" });
+  }
+});
+
+app.post('/api/items/:id/lock', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const item = await dbGet(`SELECT title FROM items WHERE id = ?`, [itemId]);
+    await dbRun(`UPDATE assignments SET is_locked = 1 WHERE item_id = ?`, [itemId]);
+    logAudit(req.user.estate_id, req.user.id, 'LOCK_ASSIGNMENT', 'items', itemId, {
+      itemId,
+      itemTitle: item ? item.title : '',
+      changedBy: req.user.name,
+      timestamp: new Date().toISOString()
+    });
     res.json({ success: true });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to assign item" });
+    res.status(500).json({ error: "Failed to lock assignment" });
   }
 });
 
 app.post('/api/items/:id/unlock', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const itemId = req.params.id;
+    const item = await dbGet(`SELECT title FROM items WHERE id = ?`, [itemId]);
     await dbRun(`UPDATE assignments SET is_locked = 0 WHERE item_id = ?`, [itemId]);
-    logAudit(req.user.estate_id, req.user.id, 'UNLOCK_ASSIGNMENT', 'items', itemId, {});
+    logAudit(req.user.estate_id, req.user.id, 'UNLOCK_ASSIGNMENT', 'items', itemId, {
+      itemId,
+      itemTitle: item ? item.title : '',
+      changedBy: req.user.name,
+      timestamp: new Date().toISOString()
+    });
     res.json({ success: true });
   } catch (err) {
     console.error(err);

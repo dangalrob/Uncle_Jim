@@ -1,6 +1,6 @@
 {
   "name": "uncle-jims-estate",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Private family web app to document, review, assign, ship, and preserve Uncle Jim's estate possessions.",
   "main": "server.js",
   "type": "module",

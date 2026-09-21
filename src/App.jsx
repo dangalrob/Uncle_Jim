@@ -198,9 +198,45 @@ export default function App() {
   const [adminUsersList, setAdminUsersList] = useState([]);
   const [isLoadingAdminUsers, setIsLoadingAdminUsers] = useState(false);
   const [userToResetPassword, setUserToResetPassword] = useState(null); // target user object
+  const [resetPasswordInput, setResetPasswordInput] = useState('');
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [resetPasswordSuccess, setResetPasswordSuccess] = useState(null);
   const [resetPasswordError, setResetPasswordError] = useState(null);
+  const [showAddUserModal, setShowAddUserModal] = useState(false);
+  const [addUserForm, setAddUserForm] = useState({ name: '', email: '', role: 'reviewer', password: '', notes: '', is_active: 1 });
+  const [isSubmittingUser, setIsSubmittingUser] = useState(false);
+  const [userModalError, setUserModalError] = useState(null);
+  const [userModalSuccess, setUserModalSuccess] = useState(null);
+  const [editingUser, setEditingUser] = useState(null); // user object being edited
+  const [editUserForm, setEditUserForm] = useState({ name: '', email: '', role: 'reviewer', notes: '', is_active: 1 });
+  const [assignmentRowStates, setAssignmentRowStates] = useState({}); // { [itemId]: { status: 'saving'|'saved'|'error', errorMsg: '' } }
+  const [assignmentSearch, setAssignmentSearch] = useState('');
+  const [assignmentCategoryFilter, setAssignmentCategoryFilter] = useState('');
+  const [assignmentStatusFilter, setAssignmentStatusFilter] = useState('all'); // 'all' | 'assigned' | 'unassigned' | 'tbd' | 'locked'
+
+  const handleExportAssignmentsCSV = () => {
+    const headers = ['Item ID', 'Item Number', 'Title', 'Category', 'Status', 'Estimated Value', 'Destination Type', 'Assigned To', 'Locked'];
+    const rows = items.map(i => [
+      `"${i.id}"`,
+      `"${i.item_number || ''}"`,
+      `"${(i.title || '').replace(/"/g, '""')}"`,
+      `"${(i.category_name || '').replace(/"/g, '""')}"`,
+      `"${i.status || ''}"`,
+      `"${(i.value || '').replace(/"/g, '""')}"`,
+      `"${i.destination_type || ''}"`,
+      `"${(i.assigned_to_name || (i.destination_type === 'tbd' ? 'TBD' : '')).replace(/"/g, '""')}"`,
+      i.is_locked ? 'Yes' : 'No'
+    ]);
+    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `uncle_jims_estate_assignments_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   // Admin Interest Dashboard State
   const [adminInterests, setAdminInterests] = useState([]);
@@ -815,6 +851,10 @@ export default function App() {
 
   const handleResetUserPassword = async () => {
     if (!userToResetPassword) return;
+    if (!resetPasswordInput || !resetPasswordInput.trim()) {
+      setResetPasswordError("Please enter a new password.");
+      return;
+    }
     setIsResettingPassword(true);
     setResetPasswordError(null);
     setResetPasswordSuccess(null);
@@ -822,25 +862,244 @@ export default function App() {
     try {
       const res = await fetch(`/api/admin/users/${userToResetPassword.id}/reset-password`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPassword: resetPasswordInput.trim() })
       });
 
       const data = await res.json();
       if (res.ok) {
-        setResetPasswordSuccess(data.message || `Password for ${userToResetPassword.name} has been reset to default.`);
+        setResetPasswordSuccess(data.message || `Password for ${userToResetPassword.name} has been updated.`);
+        setResetPasswordInput('');
         setTimeout(() => {
           setUserToResetPassword(null);
           setResetPasswordSuccess(null);
           fetchAdminUsers();
         }, 1800);
       } else {
-        setResetPasswordError(data.error || "Failed to reset password.");
+        setResetPasswordError(data.error || "Failed to update password.");
       }
     } catch (err) {
       console.error("Reset password network error:", err);
       setResetPasswordError("Network error. Please try again.");
     } finally {
       setIsResettingPassword(false);
+    }
+  };
+
+  const handleAddUser = async (e) => {
+    if (e) e.preventDefault();
+    setUserModalError(null);
+    setUserModalSuccess(null);
+
+    if (!addUserForm.name.trim() || !addUserForm.email.trim() || !addUserForm.password.trim()) {
+      setUserModalError("Name, email, and password are required.");
+      return;
+    }
+
+    setIsSubmittingUser(true);
+    try {
+      const res = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(addUserForm)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setUserModalError(data.error || "Failed to create user.");
+      } else {
+        setUserModalSuccess(`User ${addUserForm.name} created successfully!`);
+        await fetchAdminUsers();
+        setTimeout(() => {
+          setShowAddUserModal(false);
+          setUserModalSuccess(null);
+          setAddUserForm({ name: '', email: '', role: 'reviewer', password: '', notes: '', is_active: 1 });
+        }, 1500);
+      }
+    } catch (err) {
+      console.error("Add user error:", err);
+      setUserModalError("Network error. Please try again.");
+    } finally {
+      setIsSubmittingUser(false);
+    }
+  };
+
+  const handleEditUser = async (e) => {
+    if (e) e.preventDefault();
+    if (!editingUser) return;
+    setUserModalError(null);
+    setUserModalSuccess(null);
+
+    if (!editUserForm.name.trim() || !editUserForm.email.trim()) {
+      setUserModalError("Name and email are required.");
+      return;
+    }
+
+    setIsSubmittingUser(true);
+    try {
+      const res = await fetch(`/api/admin/users/${editingUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editUserForm)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setUserModalError(data.error || "Failed to update user.");
+      } else {
+        setUserModalSuccess(`User ${editUserForm.name} updated successfully!`);
+        await fetchAdminUsers();
+        setTimeout(() => {
+          setEditingUser(null);
+          setUserModalSuccess(null);
+        }, 1500);
+      }
+    } catch (err) {
+      console.error("Edit user error:", err);
+      setUserModalError("Network error. Please try again.");
+    } finally {
+      setIsSubmittingUser(false);
+    }
+  };
+
+  const handleToggleUserActive = async (targetUser) => {
+    const nextActive = targetUser.is_active === 0 ? 1 : 0;
+    try {
+      const res = await fetch(`/api/admin/users/${targetUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: nextActive })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || "Failed to update active status.");
+      } else {
+        await fetchAdminUsers();
+      }
+    } catch (err) {
+      console.error("Toggle user active error:", err);
+      alert("Network error updating user status.");
+    }
+  };
+
+  const handleAssignItem = async (itemId, recipientUserId, destinationType, destinationName, isLocked) => {
+    setAssignmentRowStates(prev => ({
+      ...prev,
+      [itemId]: { status: 'saving' }
+    }));
+
+    try {
+      const res = await fetch(`/api/items/${itemId}/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipientUserId, destinationType, destinationName, isLocked })
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to assign item');
+      }
+
+      await fetchItems();
+
+      setAssignmentRowStates(prev => ({
+        ...prev,
+        [itemId]: { status: 'saved' }
+      }));
+
+      setTimeout(() => {
+        setAssignmentRowStates(prev => {
+          if (prev[itemId]?.status === 'saved') {
+            const copy = { ...prev };
+            delete copy[itemId];
+            return copy;
+          }
+          return prev;
+        });
+      }, 2000);
+    } catch (err) {
+      console.error("Assign item failed:", err);
+      setAssignmentRowStates(prev => ({
+        ...prev,
+        [itemId]: { status: 'error', errorMsg: err.message || 'Save failed' }
+      }));
+      throw err;
+    }
+  };
+
+  const handleLockAssignment = async (itemId) => {
+    setAssignmentRowStates(prev => ({
+      ...prev,
+      [itemId]: { status: 'saving' }
+    }));
+    try {
+      const res = await fetch(`/api/items/${itemId}/lock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to lock assignment');
+      }
+      await fetchItems();
+      setAssignmentRowStates(prev => ({
+        ...prev,
+        [itemId]: { status: 'saved' }
+      }));
+      setTimeout(() => {
+        setAssignmentRowStates(prev => {
+          if (prev[itemId]?.status === 'saved') {
+            const copy = { ...prev };
+            delete copy[itemId];
+            return copy;
+          }
+          return prev;
+        });
+      }, 2000);
+    } catch (err) {
+      console.error("Lock assignment failed:", err);
+      setAssignmentRowStates(prev => ({
+        ...prev,
+        [itemId]: { status: 'error', errorMsg: err.message || 'Lock failed' }
+      }));
+      throw err;
+    }
+  };
+
+  const handleUnlockAssignment = async (itemId) => {
+    setAssignmentRowStates(prev => ({
+      ...prev,
+      [itemId]: { status: 'saving' }
+    }));
+    try {
+      const res = await fetch(`/api/items/${itemId}/unlock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to unlock assignment');
+      }
+      await fetchItems();
+      setAssignmentRowStates(prev => ({
+        ...prev,
+        [itemId]: { status: 'saved' }
+      }));
+      setTimeout(() => {
+        setAssignmentRowStates(prev => {
+          if (prev[itemId]?.status === 'saved') {
+            const copy = { ...prev };
+            delete copy[itemId];
+            return copy;
+          }
+          return prev;
+        });
+      }, 2000);
+    } catch (err) {
+      console.error("Unlock assignment failed:", err);
+      setAssignmentRowStates(prev => ({
+        ...prev,
+        [itemId]: { status: 'error', errorMsg: err.message || 'Unlock failed' }
+      }));
+      throw err;
     }
   };
 
@@ -2333,6 +2592,13 @@ export default function App() {
                   <LayoutDashboard size={18} /> 🏠 Main Dashboard
                 </button>
 
+                <button
+                  className={`sidebar-item ${currentView === 'admin_dashboard' ? 'active' : ''}`}
+                  onClick={() => { setCurrentView('admin_dashboard'); setMobileNavOpen(false); }}
+                >
+                  <ShieldCheck size={18} /> Admin Dashboard
+                </button>
+
                 <button className={`sidebar-item ${currentView === 'admin_review' ? 'active' : ''}`} onClick={() => { setAdminReviewItemId(null); setCurrentView('admin_review'); setMobileNavOpen(false); }}>
                   <CheckSquare size={18} /> Admin Review Mode
                 </button>
@@ -2374,7 +2640,7 @@ export default function App() {
                 </button>
 
                 <button className={`sidebar-item ${currentView === 'users' ? 'active' : ''}`} onClick={() => { setCurrentView('users'); fetchAdminUsers(); setMobileNavOpen(false); }}>
-                  <Users size={18} /> Family Users
+                  <Users size={18} /> Users
                 </button>
 
                 <button className={`sidebar-item ${currentView === 'logs' ? 'active' : ''}`} onClick={() => { setCurrentView('logs'); fetchAuditLogs(); setMobileNavOpen(false); }}>
@@ -2494,66 +2760,6 @@ export default function App() {
 
                 {/* HEADER ACTIONS & USER PROFILE */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  {/* ADMIN OPERATIONAL CONTROLS: Only visible in Admin role & Admin View mode */}
-                  {isAdminOperational && (
-                    <>
-                      {/* PERSISTENT THUMBNAIL CACHE STATUS INDICATOR */}
-                      {cacheStats.total > 0 && (
-                        <div>
-                          {!cacheStats.isComplete ? (
-                            <div
-                              style={{
-                                fontSize: '0.78rem',
-                                fontWeight: 'bold',
-                                color: '#0277bd',
-                                background: '#e1f5fe',
-                                border: '1px solid #b3e5fc',
-                                padding: '0.35rem 0.75rem',
-                                borderRadius: '20px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px'
-                              }}
-                              title={`${cacheStats.cached} of ${cacheStats.total} photos stored persistently on laptop`}
-                            >
-                              <RefreshCw size={12} style={{ animation: 'spin 1.5s linear infinite' }} />
-                              <span>Updating photos: {cacheStats.remaining || cacheStats.updating} remaining</span>
-                            </div>
-                          ) : (
-                            <div
-                              style={{
-                                fontSize: '0.75rem',
-                                color: '#2e7d32',
-                                background: '#f1f8e9',
-                                border: '1px solid #dcedc8',
-                                padding: '0.3rem 0.65rem',
-                                borderRadius: '20px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '5px',
-                                opacity: 0.85
-                              }}
-                              title="All thumbnails persistently cached in laptop IndexedDB"
-                            >
-                              <Check size={13} color="#2e7d32" />
-                              <span>Photos cached: {cacheStats.cached} / {cacheStats.total}</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* OFFLINE MODE TOGGLE BUTTON */}
-                      <button
-                        className={`btn-outline ${offlineMode ? 'btn-amber-active' : ''}`}
-                        style={{ fontSize: '0.85rem', padding: '0.4rem 0.85rem', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
-                        onClick={handleToggleOfflineMode}
-                      >
-                        {offlineMode ? <WifiOff size={16} color="#d32f2f" /> : <Wifi size={16} color="#2e7d32" />}
-                        <span>{offlineMode ? 'Offline Mode: ON' : 'Offline Mode: OFF'}</span>
-                      </button>
-                    </>
-                  )}
-
                   {/* ADMIN VIEW MODE SWITCHER: Visible to Admin so they can toggle back and forth */}
                   {currentUser?.role === 'admin' && (
                     <button
@@ -2977,6 +3183,208 @@ export default function App() {
                   </button>
                   <button className="btn-outline" style={{ fontSize: '0.85rem' }} onClick={() => { setCurrentView('logs'); fetchAuditLogs(); }}>
                     📜 Open Full Audit & Activity Logs
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ADMIN DASHBOARD: OPERATIONAL CONTROLS & SYSTEM HEALTH */}
+          {currentView === 'admin_dashboard' && currentUser?.role === 'admin' && (
+            <div style={{ maxWidth: '1000px', margin: '0 auto', paddingBottom: '3rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                <div>
+                  <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)', margin: '0 0 4px 0' }}>
+                    🛡️ Admin Dashboard
+                  </h1>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>
+                    Operational controls, persistent photo cache management, and device offline mode.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <button className="btn-outline" onClick={() => { setAdminReviewItemId(null); setCurrentView('admin_review'); }}>
+                    <CheckSquare size={16} style={{ marginRight: '4px' }} /> Admin Review Mode
+                  </button>
+                  <button className="btn-green" onClick={handleNavigateHome}>
+                    🏠 Main Dashboard
+                  </button>
+                </div>
+              </div>
+
+              {/* OPERATIONAL CONTROLS GRID */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem', marginBottom: '1.5rem' }}>
+                {/* 1. PERSISTENT PHOTO CACHE CARD */}
+                <div className="card" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.85rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                        <div style={{ background: '#e0f2fe', color: '#0284c7', padding: '8px', borderRadius: '10px' }}>
+                          <Database size={22} />
+                        </div>
+                        <div>
+                          <h3 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--pine-deep)' }}>Photos Cached</h3>
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Local IndexedDB Storage</div>
+                        </div>
+                      </div>
+                      {cacheStats.total > 0 && cacheStats.isComplete ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#dcfce7', color: '#166534', padding: '3px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 700 }}>
+                          <Check size={13} color="#166534" /> Synced
+                        </span>
+                      ) : (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#e0f2fe', color: '#0369a1', padding: '3px 8px', borderRadius: '12px', fontSize: '0.75rem', fontWeight: 700 }}>
+                          <RefreshCw size={12} className="animate-spin" /> Updating
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '1rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '0.88rem', color: '#475569', fontWeight: 600 }}>Cached Photos</span>
+                        <span style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--pine-primary)' }}>
+                          {cacheStats.cached} <span style={{ fontSize: '0.9rem', color: '#64748b', fontWeight: 400 }}>/ {cacheStats.total}</span>
+                        </span>
+                      </div>
+                      <div style={{ width: '100%', height: '8px', background: '#e2e8f0', borderRadius: '4px', overflow: 'hidden' }}>
+                        <div
+                          style={{
+                            width: `${cacheStats.total > 0 ? Math.min(100, Math.round((cacheStats.cached / cacheStats.total) * 100)) : 100}%`,
+                            height: '100%',
+                            background: cacheStats.isComplete ? '#16a34a' : '#0284c7',
+                            transition: 'width 0.3s ease'
+                          }}
+                        />
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '6px' }}>
+                        {cacheStats.isComplete
+                          ? "All item thumbnails are persistently stored in browser storage for instant viewing offline."
+                          : `Updating cache: ${cacheStats.remaining || cacheStats.updating} images remaining.`}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    className="btn-outline"
+                    style={{ width: '100%', justifyContent: 'center', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem' }}
+                    onClick={() => {
+                      thumbnailCache.cacheAllThumbnails(items);
+                    }}
+                  >
+                    <RefreshCw size={15} /> Re-verify & Sync Photos Cache
+                  </button>
+                </div>
+
+                {/* 2. OFFLINE MODE CARD */}
+                <div className="card" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.85rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                        <div style={{ background: offlineMode ? '#fef3c7' : '#dcfce7', color: offlineMode ? '#d97706' : '#16a34a', padding: '8px', borderRadius: '10px' }}>
+                          {offlineMode ? <WifiOff size={22} /> : <Wifi size={22} />}
+                        </div>
+                        <div>
+                          <h3 style={{ margin: 0, fontSize: '1.15rem', color: 'var(--pine-deep)' }}>Offline Mode</h3>
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Device Connectivity State</div>
+                        </div>
+                      </div>
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        background: offlineMode ? '#fef2f2' : '#f0fdf4',
+                        color: offlineMode ? '#991b1b' : '#166534',
+                        border: `1px solid ${offlineMode ? '#fecaca' : '#bbf7d0'}`,
+                        padding: '3px 8px',
+                        borderRadius: '12px',
+                        fontSize: '0.75rem',
+                        fontWeight: 700
+                      }}>
+                        {offlineMode ? '● ACTIVE (OFFLINE)' : '● OFF (ONLINE)'}
+                      </span>
+                    </div>
+
+                    <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '1rem' }}>
+                      <div style={{ fontSize: '0.88rem', color: '#1e293b', fontWeight: 600, marginBottom: '4px' }}>
+                        Current Status: <span style={{ color: offlineMode ? '#d97706' : '#16a34a' }}>{offlineMode ? 'Offline Simulation Enabled' : 'Live Online Connection'}</span>
+                      </div>
+                      <p style={{ fontSize: '0.78rem', color: '#64748b', margin: 0, lineHeight: '1.4' }}>
+                        When Offline Mode is active, catalog items and photos are served strictly from local storage, allowing you to simulate or test catalog browsing in areas with poor internet.
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    className={`btn-outline ${offlineMode ? 'btn-amber-active' : ''}`}
+                    style={{
+                      width: '100%',
+                      justifyContent: 'center',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      fontSize: '0.9rem',
+                      fontWeight: 700,
+                      padding: '0.65rem 1rem',
+                      background: offlineMode ? '#fffbeb' : '#f0fdf4',
+                      color: offlineMode ? '#b45309' : '#15803d',
+                      borderColor: offlineMode ? '#fcd34d' : '#86efac'
+                    }}
+                    onClick={handleToggleOfflineMode}
+                  >
+                    {offlineMode ? <Wifi size={16} /> : <WifiOff size={16} />}
+                    {offlineMode ? 'Turn OFF Offline Mode' : 'Turn ON Offline Mode'}
+                  </button>
+                </div>
+              </div>
+
+              {/* QUICK OPERATIONAL LINKS & DIAGNOSTICS */}
+              <div className="card" style={{ padding: '1.5rem' }}>
+                <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.15rem', color: 'var(--pine-deep)' }}>System & Workflow Quick Access</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem' }}>
+                  <button
+                    className="btn-outline"
+                    style={{ padding: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.65rem', justifyContent: 'flex-start', background: '#fff' }}
+                    onClick={() => { setAdminReviewItemId(null); setCurrentView('admin_review'); }}
+                  >
+                    <CheckSquare size={18} color="var(--pine-primary)" />
+                    <div style={{ textAlign: 'left' }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--pine-deep)' }}>Admin Review Mode</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Rapid cleanup & assignment</div>
+                    </div>
+                  </button>
+
+                  <button
+                    className="btn-outline"
+                    style={{ padding: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.65rem', justifyContent: 'flex-start', background: '#fff' }}
+                    onClick={() => { setCurrentView('assignments'); }}
+                  >
+                    <UserCheck size={18} color="var(--pine-primary)" />
+                    <div style={{ textAlign: 'left' }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--pine-deep)' }}>Assignments</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Live disposition & locking</div>
+                    </div>
+                  </button>
+
+                  <button
+                    className="btn-outline"
+                    style={{ padding: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.65rem', justifyContent: 'flex-start', background: '#fff' }}
+                    onClick={() => { setCurrentView('data_backup'); fetchDatabaseBackups(); }}
+                  >
+                    <Database size={18} color="var(--pine-primary)" />
+                    <div style={{ textAlign: 'left' }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--pine-deep)' }}>Data & Backup</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Production SQLite snapshots</div>
+                    </div>
+                  </button>
+
+                  <button
+                    className="btn-outline"
+                    style={{ padding: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.65rem', justifyContent: 'flex-start', background: '#fff' }}
+                    onClick={() => { setCurrentView('users'); fetchAdminUsers(); }}
+                  >
+                    <Users size={18} color="var(--pine-primary)" />
+                    <div style={{ textAlign: 'left' }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--pine-deep)' }}>User Management</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Active users & security</div>
+                    </div>
                   </button>
                 </div>
               </div>
@@ -4044,55 +4452,308 @@ export default function App() {
             );
           })()}
 
-          {/* MOCKUP 9: ADMIN ASSIGNMENTS */}
-          {currentView === 'assignments' && (
-            <div>
-              <div className="page-header">
-                <div>
-                  <h1 className="page-title">🎯 Assignments</h1>
-                  <p className="page-subtitle">Assign items to family members or institutions and lock finalized choices.</p>
-                </div>
-                <button className="btn-outline">Export</button>
-              </div>
+          {/* LIVE ESTATE ASSIGNMENTS VIEW */}
+          {currentView === 'assignments' && (() => {
+            const filteredAssignmentItems = items.filter(item => {
+              if (assignmentSearch.trim()) {
+                const q = assignmentSearch.toLowerCase();
+                const matchTitle = (item.title || '').toLowerCase().includes(q);
+                const matchNum = (item.item_number || '').toString().toLowerCase().includes(q);
+                const matchAssignee = (item.assigned_to_name || '').toLowerCase().includes(q);
+                if (!matchTitle && !matchNum && !matchAssignee) return false;
+              }
+              if (assignmentCategoryFilter && item.category_id !== assignmentCategoryFilter) {
+                return false;
+              }
+              if (assignmentStatusFilter === 'assigned') {
+                return Boolean(item.assigned_to_name || item.recipient_user_id);
+              }
+              if (assignmentStatusFilter === 'unassigned') {
+                return !item.assigned_to_name && !item.recipient_user_id && item.destination_type !== 'tbd';
+              }
+              if (assignmentStatusFilter === 'tbd') {
+                return item.destination_type === 'tbd';
+              }
+              if (assignmentStatusFilter === 'locked') {
+                return Boolean(item.is_locked);
+              }
+              return true;
+            });
 
-              <div className="data-table-card">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Item</th>
-                      <th>Category</th>
-                      <th>Interested</th>
-                      <th>Assigned To</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td style={{ fontWeight: 'bold' }}>Dining Chair</td>
-                      <td>Furniture</td>
-                      <td><span style={{ color: '#d32f2f', fontWeight: 'bold' }}>3</span></td>
-                      <td>—</td>
-                      <td><span className="badge-status badge-needs-decision">Needs Decision</span></td>
-                    </tr>
-                    <tr>
-                      <td style={{ fontWeight: 'bold' }}>Vintage Compass</td>
-                      <td>Maritime</td>
-                      <td>2</td>
-                      <td>Jean</td>
-                      <td><span className="badge-status badge-assigned">Assigned</span></td>
-                    </tr>
-                    <tr>
-                      <td style={{ fontWeight: 'bold' }}>Sailing Print</td>
-                      <td>Artwork</td>
-                      <td>1</td>
-                      <td>Tim</td>
-                      <td><span className="badge-status badge-assigned">Assigned</span></td>
-                    </tr>
-                  </tbody>
-                </table>
+            return (
+              <div style={{ maxWidth: '1100px', margin: '0 auto', paddingBottom: '3rem' }}>
+                <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                  <div>
+                    <h1 className="page-title" style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)', margin: 0 }}>
+                      🎯 Assignments
+                    </h1>
+                    <p className="page-subtitle" style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: '4px 0 0 0' }}>
+                      Assign estate items to family members or institutions and lock finalized choices.
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <button className="btn-outline" onClick={handleExportAssignmentsCSV} title="Export assignments as CSV">
+                      <Download size={15} style={{ marginRight: '4px' }} /> Export
+                    </button>
+                    <button className="btn-outline" onClick={fetchItems} title="Refresh live items">
+                      <RefreshCw size={15} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* SEARCH & FILTERS BAR */}
+                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ flex: 1, minWidth: '220px', position: 'relative' }}>
+                    <input
+                      type="text"
+                      className="form-field-input"
+                      placeholder="Search items or assignees..."
+                      value={assignmentSearch}
+                      onChange={e => setAssignmentSearch(e.target.value)}
+                      style={{ paddingLeft: '2rem', height: '38px', borderRadius: '8px' }}
+                    />
+                    <Search size={14} color="#94a3b8" style={{ position: 'absolute', left: '10px', top: '12px' }} />
+                  </div>
+
+                  <select
+                    className="form-field-select"
+                    value={assignmentCategoryFilter}
+                    onChange={e => setAssignmentCategoryFilter(e.target.value)}
+                    style={{ width: 'auto', minWidth: '160px', height: '38px', borderRadius: '8px' }}
+                  >
+                    <option value="">All Categories</option>
+                    {categories.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+
+                  <div style={{ display: 'flex', gap: '4px', background: '#e2e8f0', padding: '3px', borderRadius: '8px' }}>
+                    {['all', 'assigned', 'unassigned', 'tbd', 'locked'].map(tab => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setAssignmentStatusFilter(tab)}
+                        style={{
+                          border: 'none',
+                          background: assignmentStatusFilter === tab ? '#fff' : 'transparent',
+                          color: assignmentStatusFilter === tab ? 'var(--pine-deep)' : '#64748b',
+                          fontWeight: assignmentStatusFilter === tab ? 700 : 500,
+                          fontSize: '0.78rem',
+                          padding: '4px 10px',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          boxShadow: assignmentStatusFilter === tab ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
+                        }}
+                      >
+                        {tab === 'all' ? `All (${items.length})` : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* LIVE ASSIGNMENTS TABLE */}
+                <div className="data-table-card" style={{ background: '#fff', borderRadius: '12px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ background: '#f8faf9', borderBottom: '1px solid var(--border-color)', textAlign: 'left' }}>
+                          <th style={{ padding: '0.75rem 1rem' }}>Item</th>
+                          <th style={{ padding: '0.75rem 1rem' }}>Category</th>
+                          <th style={{ padding: '0.75rem 1rem', minWidth: '220px' }}>Assigned To</th>
+                          <th style={{ padding: '0.75rem 1rem' }}>Status / Disposition</th>
+                          <th style={{ padding: '0.75rem 1rem', textAlign: 'center' }}>Lock</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredAssignmentItems.map(item => {
+                          const isLocked = Boolean(item.is_locked);
+                          const rowState = assignmentRowStates[item.id];
+                          const activeUsers = adminUsersList.filter(u => u.is_active !== 0);
+                          const currentAssignedId = item.recipient_user_id;
+                          const currentAssignedUser = adminUsersList.find(u => u.id === currentAssignedId);
+                          const isCurrentAssignedInactive = currentAssignedUser && currentAssignedUser.is_active === 0;
+
+                          const currentSelectVal = item.destination_type === 'tbd'
+                            ? 'tbd'
+                            : (item.recipient_user_id || (adminUsersList.find(u => u.name === item.assigned_to_name)?.id) || '');
+
+                          return (
+                            <tr key={item.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                              {/* Item info */}
+                              <td style={{ padding: '0.75rem 1rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                  <div style={{ width: '44px', height: '44px', borderRadius: '6px', overflow: 'hidden', background: '#f1f5f9', flexShrink: 0, border: '1px solid #e2e8f0' }}>
+                                    <CachedThumbnail
+                                      url={item.primary_thumb || item.primary_photo}
+                                      version={item.primary_thumb_version}
+                                      alt={item.title}
+                                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                    />
+                                  </div>
+                                  <div>
+                                    <div style={{ fontWeight: 600, color: 'var(--pine-deep)' }}>{item.title}</div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                      {item.item_number ? `#${item.item_number} • ` : ''}{item.value ? (item.value.startsWith('$') ? item.value : `$${item.value}`) : 'No valuation'}
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Category */}
+                              <td style={{ padding: '0.75rem 1rem', fontSize: '0.88rem', color: '#475569' }}>
+                                <span className="badge-category" style={{ fontSize: '0.75rem' }}>
+                                  {item.category_name || 'Uncategorized'}
+                                </span>
+                              </td>
+
+                              {/* Assigned To Dropdown & Inline Save State */}
+                              <td style={{ padding: '0.75rem 1rem' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    {isLocked && <Lock size={13} color="#b45309" title="Locked" />}
+                                    <select
+                                      disabled={isLocked || rowState?.status === 'saving'}
+                                      value={currentSelectVal}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (!val) {
+                                          handleAssignItem(item.id, null, 'undecided', null, isLocked ? 1 : 0);
+                                        } else if (val === 'tbd') {
+                                          handleAssignItem(item.id, null, 'tbd', 'TBD', isLocked ? 1 : 0);
+                                        } else {
+                                          const found = adminUsersList.find(u => u.id === val);
+                                          const destType = found?.role === 'institution' ? 'institution' : 'family';
+                                          handleAssignItem(item.id, val, destType, found?.name || val, isLocked ? 1 : 0);
+                                        }
+                                      }}
+                                      style={{
+                                        padding: '0.35rem 0.5rem',
+                                        borderRadius: '6px',
+                                        border: isLocked ? '1px solid #fde68a' : '1px solid var(--border-color)',
+                                        background: isLocked ? '#fefce8' : '#fff',
+                                        fontSize: '0.85rem',
+                                        color: isLocked ? '#713f12' : '#1e293b',
+                                        cursor: isLocked ? 'not-allowed' : 'pointer',
+                                        width: '100%',
+                                        maxWidth: '260px'
+                                      }}
+                                    >
+                                      <option value="">-- Unassigned --</option>
+                                      <option value="tbd">TBD (To Be Determined)</option>
+                                      {isCurrentAssignedInactive && (
+                                        <option value={currentAssignedUser.id}>
+                                          ⚠️ {currentAssignedUser.name} (Inactive)
+                                        </option>
+                                      )}
+                                      {activeUsers.map(u => (
+                                        <option key={u.id} value={u.id}>
+                                          {u.name} ({u.role})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+
+                                  {/* Immediate Visual Save State */}
+                                  {rowState?.status === 'saving' && (
+                                    <div style={{ fontSize: '0.72rem', color: '#0284c7', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                      <Loader2 size={11} className="animate-spin" /> Saving...
+                                    </div>
+                                  )}
+                                  {rowState?.status === 'saved' && (
+                                    <div style={{ fontSize: '0.72rem', color: '#16a34a', fontWeight: 600 }}>
+                                      ✓ Saved
+                                    </div>
+                                  )}
+                                  {rowState?.status === 'error' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const val = currentSelectVal;
+                                        if (!val) handleAssignItem(item.id, null, 'undecided', null, isLocked ? 1 : 0);
+                                        else if (val === 'tbd') handleAssignItem(item.id, null, 'tbd', 'TBD', isLocked ? 1 : 0);
+                                        else {
+                                          const found = adminUsersList.find(u => u.id === val);
+                                          handleAssignItem(item.id, val, found?.role === 'institution' ? 'institution' : 'family', found?.name || val, isLocked ? 1 : 0);
+                                        }
+                                      }}
+                                      style={{ fontSize: '0.72rem', color: '#dc2626', background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', fontWeight: 600 }}
+                                    >
+                                      ⚠️ Save failed — Retry
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+
+                              {/* Status / Disposition */}
+                              <td style={{ padding: '0.75rem 1rem' }}>
+                                {isLocked ? (
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', borderRadius: '12px', padding: '2px 8px', fontSize: '0.75rem', fontWeight: 700 }}>
+                                    <Lock size={11} /> Locked
+                                  </span>
+                                ) : item.destination_type === 'tbd' ? (
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: '12px', padding: '2px 8px', fontSize: '0.75rem', fontWeight: 700 }}>
+                                    TBD
+                                  </span>
+                                ) : item.assigned_to_name || item.recipient_user_id ? (
+                                  <span className="badge-status badge-assigned" style={{ fontSize: '0.75rem' }}>
+                                    Assigned
+                                  </span>
+                                ) : (
+                                  <span className="badge-status badge-needs-decision" style={{ fontSize: '0.75rem' }}>
+                                    Undecided
+                                  </span>
+                                )}
+                              </td>
+
+                              {/* Lock / Unlock Toggle Button */}
+                              <td style={{ padding: '0.75rem 1rem', textAlign: 'center' }}>
+                                <button
+                                  type="button"
+                                  className="btn-outline"
+                                  disabled={rowState?.status === 'saving'}
+                                  onClick={() => {
+                                    if (isLocked) {
+                                      handleUnlockAssignment(item.id);
+                                    } else {
+                                      handleLockAssignment(item.id);
+                                    }
+                                  }}
+                                  style={{
+                                    padding: '0.35rem 0.65rem',
+                                    fontSize: '0.75rem',
+                                    fontWeight: 600,
+                                    borderRadius: '6px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    background: isLocked ? '#fefce8' : '#fff',
+                                    color: isLocked ? '#b45309' : '#475569',
+                                    borderColor: isLocked ? '#fde68a' : 'var(--border-color)'
+                                  }}
+                                  title={isLocked ? "Assignment is locked. Click to unlock." : "Assignment is editable. Click to lock."}
+                                >
+                                  {isLocked ? <Unlock size={12} /> : <Lock size={12} />}
+                                  <span>{isLocked ? 'Unlock' : 'Lock'}</span>
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+
+                        {filteredAssignmentItems.length === 0 && (
+                          <tr>
+                            <td colSpan={5} style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
+                              No items match the current search or filters.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* MOCKUP 10: ADMIN DISTRIBUTION / SHIPPING */}
           {currentView === 'distribution' && (
@@ -4811,6 +5472,10 @@ export default function App() {
             <AdminReviewMode
               items={items}
               categories={categories}
+              users={adminUsersList}
+              onAssignItem={handleAssignItem}
+              onLockAssignment={handleLockAssignment}
+              onUnlockAssignment={handleUnlockAssignment}
               initialItemId={adminReviewItemId}
               onSaveItem={async (id, updatedFields) => {
                 const res = await fetch(`/api/items/${id}`, {
@@ -5789,24 +6454,35 @@ export default function App() {
             </div>
           )}
 
-          {/* ADMIN FAMILY USERS & PASSWORD RESET VIEW */}
+          {/* ADMIN USER MANAGEMENT & PASSWORDS VIEW */}
           {currentView === 'users' && currentUser?.role === 'admin' && (
-            <div style={{ maxWidth: '1000px', margin: '0 auto', paddingBottom: '3rem' }}>
+            <div style={{ maxWidth: '1050px', margin: '0 auto', paddingBottom: '3rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
                 <div>
                   <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.6rem', color: 'var(--pine-deep)', margin: '0 0 4px 0' }}>
-                    👥 Family Members & User Accounts
+                    👥 Users
                   </h1>
                   <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>
-                    Manage family accounts, review access roles, and reset member passwords to default.
+                    Manage user accounts, roles, active status, notes, and password credentials.
                   </p>
                 </div>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <button
+                    className="btn-green"
+                    onClick={() => {
+                      setUserModalError(null);
+                      setUserModalSuccess(null);
+                      setAddUserForm({ name: '', email: '', role: 'reviewer', password: '', notes: '', is_active: 1 });
+                      setShowAddUserModal(true);
+                    }}
+                  >
+                    <Plus size={16} style={{ marginRight: '4px' }} /> Add User
+                  </button>
                   <button className="btn-outline" onClick={fetchAdminUsers} disabled={isLoadingAdminUsers}>
                     🔄 Refresh Users
                   </button>
-                  <button className="btn-green" onClick={handleNavigateHome}>
-                    🏠 Return to Dashboard
+                  <button className="btn-outline" onClick={handleNavigateHome}>
+                    🏠 Dashboard
                   </button>
                 </div>
               </div>
@@ -5814,83 +6490,146 @@ export default function App() {
               {isLoadingAdminUsers ? (
                 <div className="card" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                   <Loader2 className="animate-spin" size={32} style={{ margin: '0 auto 0.75rem auto' }} />
-                  <div>Loading family members...</div>
+                  <div>Loading users...</div>
                 </div>
               ) : (
-                <div className="data-table-card">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Email</th>
-                        <th>Role</th>
-                        <th>Location</th>
-                        <th style={{ textAlign: 'right' }}>Password Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {adminUsersList.map(u => {
-                        const isAdmin = u.role === 'admin' || u.id === 'user_dan';
-                        return (
-                          <tr key={u.id}>
-                            <td style={{ fontWeight: 'bold', color: 'var(--pine-deep)' }}>
-                              {u.name}
-                            </td>
-                            <td style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                              {u.email}
-                            </td>
-                            <td>
-                              <span className={`badge-status ${isAdmin ? 'badge-assigned' : 'badge-released'}`} style={{ fontSize: '0.78rem' }}>
-                                {isAdmin ? '👑 Admin' : u.role === 'contributor' ? '📷 Photographer' : u.role === 'institution' ? '🏛️ Institution' : '👤 Family Member'}
-                              </span>
-                            </td>
-                            <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                              {u.address || '—'}
-                            </td>
-                            <td style={{ textAlign: 'right' }}>
-                              {isAdmin ? (
-                                <span style={{ fontSize: '0.78rem', color: '#64748b', fontStyle: 'italic', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                  <Lock size={13} color="#64748b" /> Protected Admin
+                <div className="data-table-card" style={{ background: '#fff', borderRadius: '12px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ background: '#f8faf9', borderBottom: '1px solid var(--border-color)', textAlign: 'left' }}>
+                          <th style={{ padding: '0.75rem 1rem' }}>Name</th>
+                          <th style={{ padding: '0.75rem 1rem' }}>Email</th>
+                          <th style={{ padding: '0.75rem 1rem' }}>Role</th>
+                          <th style={{ padding: '0.75rem 1rem' }}>Status</th>
+                          <th style={{ padding: '0.75rem 1rem' }}>Notes</th>
+                          <th style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminUsersList.map(u => {
+                          const isAdmin = u.role === 'admin' || u.id === 'user_dan';
+                          const isSelf = u.id === currentUser?.id;
+                          const isActive = u.is_active !== 0;
+
+                          return (
+                            <tr key={u.id} style={{ borderBottom: '1px solid #f1f5f9', opacity: isActive ? 1 : 0.7 }}>
+                              <td style={{ padding: '0.75rem 1rem', fontWeight: 'bold', color: 'var(--pine-deep)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span>{u.name}</span>
+                                  {!isActive && (
+                                    <span style={{ fontSize: '0.7rem', background: '#fee2e2', color: '#991b1b', padding: '1px 6px', borderRadius: '4px', fontWeight: 600 }}>
+                                      Inactive
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td style={{ padding: '0.75rem 1rem', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
+                                {u.email}
+                              </td>
+                              <td style={{ padding: '0.75rem 1rem' }}>
+                                <span className={`badge-status ${isAdmin ? 'badge-assigned' : u.role === 'contributor' ? 'badge-needs-decision' : u.role === 'institution' ? 'badge-ready' : 'badge-released'}`} style={{ fontSize: '0.78rem' }}>
+                                  {u.role === 'admin' ? '👑 Admin' : u.role === 'contributor' ? '📷 Contributor' : u.role === 'institution' ? '🏛️ Institution' : '👤 Reviewer'}
                                 </span>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className="btn-outline"
-                                  style={{
-                                    fontSize: '0.82rem',
-                                    fontWeight: '600',
-                                    padding: '0.35rem 0.75rem',
-                                    borderRadius: '6px',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '5px',
-                                    color: 'var(--pine-deep)',
-                                    borderColor: 'var(--border-color)',
-                                    background: '#fff'
-                                  }}
-                                  onClick={() => {
-                                    setResetPasswordError(null);
-                                    setResetPasswordSuccess(null);
-                                    setUserToResetPassword(u);
-                                  }}
-                                >
-                                  <Key size={14} color="var(--pine-primary)" />
-                                  Reset Password
-                                </button>
-                              )}
+                              </td>
+                              <td style={{ padding: '0.75rem 1rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span style={{
+                                    fontSize: '0.75rem',
+                                    fontWeight: 700,
+                                    padding: '2px 8px',
+                                    borderRadius: '12px',
+                                    background: isActive ? '#dcfce7' : '#fee2e2',
+                                    color: isActive ? '#166534' : '#991b1b'
+                                  }}>
+                                    {isActive ? '✓ Active' : '✕ Inactive'}
+                                  </span>
+                                  {!isSelf && (
+                                    <button
+                                      type="button"
+                                      className="btn-outline"
+                                      style={{ padding: '2px 6px', fontSize: '0.72rem', minHeight: '24px' }}
+                                      onClick={() => handleToggleUserActive(u)}
+                                      title={isActive ? "Deactivate user (hide from new assignments)" : "Activate user"}
+                                    >
+                                      {isActive ? 'Deactivate' : 'Activate'}
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                              <td style={{ padding: '0.75rem 1rem', fontSize: '0.82rem', color: '#64748b', maxWidth: '200px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {u.notes || '—'}
+                              </td>
+                              <td style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>
+                                <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                                  <button
+                                    type="button"
+                                    className="btn-outline"
+                                    style={{
+                                      fontSize: '0.8rem',
+                                      fontWeight: '600',
+                                      padding: '0.3rem 0.6rem',
+                                      borderRadius: '6px',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px'
+                                    }}
+                                    onClick={() => {
+                                      setUserModalError(null);
+                                      setUserModalSuccess(null);
+                                      setEditingUser(u);
+                                      setEditUserForm({
+                                        name: u.name,
+                                        email: u.email,
+                                        role: u.role || 'reviewer',
+                                        notes: u.notes || '',
+                                        is_active: u.is_active !== undefined ? u.is_active : 1
+                                      });
+                                    }}
+                                    title="Edit user details"
+                                  >
+                                    <Edit3 size={13} />
+                                    <span>Edit</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    className="btn-outline"
+                                    style={{
+                                      fontSize: '0.8rem',
+                                      fontWeight: '600',
+                                      padding: '0.3rem 0.65rem',
+                                      borderRadius: '6px',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px'
+                                    }}
+                                    onClick={() => {
+                                      setResetPasswordError(null);
+                                      setResetPasswordSuccess(null);
+                                      setResetPasswordInput('');
+                                      setUserToResetPassword(u);
+                                    }}
+                                    title="Reset user password"
+                                  >
+                                    <Key size={13} color="var(--pine-primary)" />
+                                    <span>Password</span>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {adminUsersList.length === 0 && (
+                          <tr>
+                            <td colSpan={6} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
+                              No users found.
                             </td>
                           </tr>
-                        );
-                      })}
-                      {adminUsersList.length === 0 && (
-                        <tr>
-                          <td colSpan={5} style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                            No users found.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
@@ -7066,7 +7805,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ADMIN RESET USER PASSWORD CONFIRMATION MODAL */}
+      {/* ADMIN RESET USER PASSWORD MODAL */}
       {userToResetPassword && (
         <div className="modal-overlay" onClick={() => !isResettingPassword && setUserToResetPassword(null)}>
           <div className="modal-card" style={{ maxWidth: '480px' }} onClick={e => e.stopPropagation()}>
@@ -7096,20 +7835,33 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <p style={{ fontSize: '1.05rem', fontWeight: '600', color: 'var(--pine-deep)', marginBottom: '0.75rem', lineHeight: '1.4' }}>
-                    Reset {userToResetPassword.name}'s password to the default password?
-                  </p>
                   <div style={{ background: '#f8faf9', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '0.85rem 1rem', marginBottom: '1rem' }}>
                     <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
                       Target Account: <strong style={{ color: 'var(--text-color)' }}>{userToResetPassword.name}</strong> ({userToResetPassword.email})
                     </div>
-                    <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>
-                      New Default Password: <strong style={{ color: 'var(--pine-primary)' }}>Lombardi</strong>
+                    <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                      Role: <strong style={{ textTransform: 'capitalize' }}>{userToResetPassword.role}</strong>
                     </div>
                   </div>
-                  <p style={{ fontSize: '0.86rem', color: 'var(--text-muted)', margin: 0 }}>
-                    {userToResetPassword.name} will be able to log in immediately using the default password and will have the option to change it anytime from their profile menu.
+
+                  <div style={{ marginBottom: '1rem' }}>
+                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-color)', marginBottom: '0.35rem' }}>
+                      New Password *
+                    </label>
+                    <input
+                      type="text"
+                      value={resetPasswordInput}
+                      onChange={e => setResetPasswordInput(e.target.value)}
+                      placeholder="Enter new password"
+                      style={{ width: '100%', minHeight: '44px', padding: '0.6rem 0.85rem', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '15px', boxSizing: 'border-box' }}
+                      autoFocus
+                    />
+                  </div>
+
+                  <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', margin: 0 }}>
+                    The user will be able to log in immediately using this new password and change it from their profile.
                   </p>
+
                   {resetPasswordError && (
                     <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', padding: '0.75rem 1rem', borderRadius: '8px', marginTop: '1rem', fontSize: '0.9rem' }}>
                       {resetPasswordError}
@@ -7132,14 +7884,290 @@ export default function App() {
                 <button
                   type="button"
                   className="btn-green-senior"
-                  disabled={isResettingPassword}
+                  disabled={isResettingPassword || !resetPasswordInput.trim()}
                   style={{ minHeight: '44px', padding: '0 1.25rem', fontWeight: 'bold' }}
                   onClick={handleResetUserPassword}
                 >
-                  {isResettingPassword ? 'Resetting...' : `Reset ${userToResetPassword.name}'s Password`}
+                  {isResettingPassword ? 'Saving...' : `Set New Password`}
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN ADD USER MODAL */}
+      {showAddUserModal && (
+        <div className="modal-overlay" onClick={() => !isSubmittingUser && setShowAddUserModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '500px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <Users size={20} color="var(--pine-primary)" />
+                <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--pine-deep)' }}>
+                  Add New User
+                </h3>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                disabled={isSubmittingUser}
+                onClick={() => setShowAddUserModal(false)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleAddUser}>
+              <div className="modal-body" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                {userModalSuccess && (
+                  <div style={{ background: '#e8f5e9', color: '#2e7d32', border: '1px solid #c8e6c9', padding: '0.75rem 1rem', borderRadius: '8px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <CheckCircle2 size={18} /> {userModalSuccess}
+                  </div>
+                )}
+                {userModalError && (
+                  <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', padding: '0.75rem 1rem', borderRadius: '8px', fontSize: '0.9rem' }}>
+                    {userModalError}
+                  </div>
+                )}
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                    Full Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={addUserForm.name}
+                    onChange={e => setAddUserForm({ ...addUserForm, name: e.target.value })}
+                    placeholder="e.g. John Doe"
+                    style={{ width: '100%', minHeight: '40px', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                    Email Address *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={addUserForm.email}
+                    onChange={e => setAddUserForm({ ...addUserForm, email: e.target.value })}
+                    placeholder="john@example.com"
+                    style={{ width: '100%', minHeight: '40px', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                    Initial Password *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={addUserForm.password}
+                    onChange={e => setAddUserForm({ ...addUserForm, password: e.target.value })}
+                    placeholder="Enter temporary password"
+                    style={{ width: '100%', minHeight: '40px', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                    System Role *
+                  </label>
+                  <select
+                    value={addUserForm.role}
+                    onChange={e => setAddUserForm({ ...addUserForm, role: e.target.value })}
+                    style={{ width: '100%', minHeight: '40px', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+                  >
+                    <option value="reviewer">Reviewer (Standard Family Member)</option>
+                    <option value="contributor">Contributor (Photographer / Cataloger)</option>
+                    <option value="institution">Institution (Museum / Archive Partner)</option>
+                    <option value="admin">Admin (Estate Administrator)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                    Notes (Optional)
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={addUserForm.notes}
+                    onChange={e => setAddUserForm({ ...addUserForm, notes: e.target.value })}
+                    placeholder="e.g. Uncle Jim's youngest brother, lives in Milwaukee"
+                    style={{ width: '100%', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', boxSizing: 'border-box', fontSize: '0.88rem' }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '4px' }}>
+                  <input
+                    type="checkbox"
+                    id="add_user_active"
+                    checked={addUserForm.is_active === 1}
+                    onChange={e => setAddUserForm({ ...addUserForm, is_active: e.target.checked ? 1 : 0 })}
+                    style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                  />
+                  <label htmlFor="add_user_active" style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--pine-deep)', cursor: 'pointer' }}>
+                    Active User (visible for item assignments)
+                  </label>
+                </div>
+              </div>
+
+              <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', padding: '1rem 1.25rem' }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  disabled={isSubmittingUser}
+                  onClick={() => setShowAddUserModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-green-senior"
+                  disabled={isSubmittingUser}
+                  style={{ minHeight: '44px', padding: '0 1.25rem', fontWeight: 'bold' }}
+                >
+                  {isSubmittingUser ? 'Creating...' : 'Create User'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN EDIT USER MODAL */}
+      {editingUser && (
+        <div className="modal-overlay" onClick={() => !isSubmittingUser && setEditingUser(null)}>
+          <div className="modal-card" style={{ maxWidth: '500px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <Edit3 size={20} color="var(--pine-primary)" />
+                <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--pine-deep)' }}>
+                  Edit User: {editingUser.name}
+                </h3>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                disabled={isSubmittingUser}
+                onClick={() => setEditingUser(null)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleEditUser}>
+              <div className="modal-body" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                {userModalSuccess && (
+                  <div style={{ background: '#e8f5e9', color: '#2e7d32', border: '1px solid #c8e6c9', padding: '0.75rem 1rem', borderRadius: '8px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <CheckCircle2 size={18} /> {userModalSuccess}
+                  </div>
+                )}
+                {userModalError && (
+                  <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #f87171', padding: '0.75rem 1rem', borderRadius: '8px', fontSize: '0.9rem' }}>
+                    {userModalError}
+                  </div>
+                )}
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                    Full Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editUserForm.name}
+                    onChange={e => setEditUserForm({ ...editUserForm, name: e.target.value })}
+                    style={{ width: '100%', minHeight: '40px', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                    Email Address *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={editUserForm.email}
+                    onChange={e => setEditUserForm({ ...editUserForm, email: e.target.value })}
+                    style={{ width: '100%', minHeight: '40px', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                    System Role *
+                  </label>
+                  <select
+                    value={editUserForm.role}
+                    onChange={e => setEditUserForm({ ...editUserForm, role: e.target.value })}
+                    style={{ width: '100%', minHeight: '40px', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', boxSizing: 'border-box' }}
+                  >
+                    <option value="reviewer">Reviewer (Standard Family Member)</option>
+                    <option value="contributor">Contributor (Photographer / Cataloger)</option>
+                    <option value="institution">Institution (Museum / Archive Partner)</option>
+                    <option value="admin">Admin (Estate Administrator)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 'bold', marginBottom: '0.35rem' }}>
+                    Notes
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={editUserForm.notes}
+                    onChange={e => setEditUserForm({ ...editUserForm, notes: e.target.value })}
+                    placeholder="e.g. Relationship, preferences, address details"
+                    style={{ width: '100%', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-color)', boxSizing: 'border-box', fontSize: '0.88rem' }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '4px' }}>
+                  <input
+                    type="checkbox"
+                    id="edit_user_active"
+                    disabled={editingUser.id === currentUser?.id}
+                    checked={editUserForm.is_active === 1}
+                    onChange={e => setEditUserForm({ ...editUserForm, is_active: e.target.checked ? 1 : 0 })}
+                    style={{ width: '18px', height: '18px', cursor: editingUser.id === currentUser?.id ? 'not-allowed' : 'pointer' }}
+                  />
+                  <label htmlFor="edit_user_active" style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--pine-deep)', cursor: editingUser.id === currentUser?.id ? 'not-allowed' : 'pointer' }}>
+                    Active User (can be selected for new assignments)
+                  </label>
+                </div>
+                {editingUser.id === currentUser?.id && (
+                  <div style={{ fontSize: '0.75rem', color: '#92400e', background: '#fef3c7', padding: '4px 8px', borderRadius: '4px' }}>
+                    You cannot deactivate your own logged-in account.
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', padding: '1rem 1.25rem' }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  disabled={isSubmittingUser}
+                  onClick={() => setEditingUser(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-green-senior"
+                  disabled={isSubmittingUser}
+                  style={{ minHeight: '44px', padding: '0 1.25rem', fontWeight: 'bold' }}
+                >
+                  {isSubmittingUser ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
