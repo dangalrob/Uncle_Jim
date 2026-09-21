@@ -478,6 +478,9 @@ export default function App() {
       fetchUsers();
       fetchReviewProgress();
       fetchDashboardStats();
+      if (currentUser.role === 'admin') {
+        fetchAdminUsers();
+      }
       if (currentView === 'admin_interests' && currentUser.role === 'admin') {
         fetchAdminInterests();
       }
@@ -5472,7 +5475,7 @@ export default function App() {
             <AdminReviewMode
               items={items}
               categories={categories}
-              users={adminUsersList}
+              users={adminUsersList && adminUsersList.length > 0 ? adminUsersList : usersList}
               onAssignItem={handleAssignItem}
               onLockAssignment={handleLockAssignment}
               onUnlockAssignment={handleUnlockAssignment}

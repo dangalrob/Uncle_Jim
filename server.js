@@ -2509,7 +2509,7 @@ app.get('/api/categories', authenticateToken, async (req, res) => {
 });
 
 app.get('/api/users', authenticateToken, async (req, res) => {
-  const users = await dbAll(`SELECT id, name, email, role, phone, address FROM users WHERE estate_id = ? ORDER BY name ASC`, [req.user.estate_id]);
+  const users = await dbAll(`SELECT id, name, email, role, phone, address, is_active, notes FROM users WHERE estate_id = ? ORDER BY name ASC`, [req.user.estate_id]);
   res.json(users);
 });
 

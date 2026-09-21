@@ -35,6 +35,29 @@ export function renderTextWithLinks(text) {
 }
 
 /**
+ * Helper to render user options for Assigned To dropdown:
+ * Active users + TBD + current assignee (even if inactive)
+ */
+export function renderUserSelectOptions(item, userList = []) {
+  const activeUsers = (userList || []).filter(u => u.is_active !== 0);
+  const isCurrentAssigneeInactive = item.assigned_to_user_id && !activeUsers.some(u => u.id === item.assigned_to_user_id);
+  const inactiveAssignee = isCurrentAssigneeInactive ? (userList || []).find(u => u.id === item.assigned_to_user_id) : null;
+
+  return (
+    <>
+      <option value="">— Unassigned —</option>
+      <option value="tbd">TBD</option>
+      {activeUsers.map(u => (
+        <option key={u.id} value={u.id}>{u.name}</option>
+      ))}
+      {inactiveAssignee && (
+        <option key={inactiveAssignee.id} value={inactiveAssignee.id}>{inactiveAssignee.name} (Inactive)</option>
+      )}
+    </>
+  );
+}
+
+/**
  * AdminReviewMode Component
  * Redesigned compact laptop inventory cleanup workspace with inline table editing,
  * live autosave, and contextual drill-down modal (Previous, Save, Save & Next, Next).
@@ -78,6 +101,34 @@ export default function AdminReviewMode({
 
   // Table container ref to maintain scroll position
   const tableContainerRef = useRef(null);
+
+  // Dynamic user list: initialized from props, with self-healing fetch fallback if empty
+  const [localUsers, setLocalUsers] = useState(users || []);
+
+  useEffect(() => {
+    if (users && users.length > 0) {
+      setLocalUsers(users);
+    }
+  }, [users]);
+
+  useEffect(() => {
+    if (!users || users.length === 0) {
+      fetch('/api/admin/users')
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data && data.users && data.users.length > 0) {
+            setLocalUsers(data.users);
+          } else {
+            return fetch('/api/users').then(r => r.ok ? r.json() : null).then(u => {
+              if (u && u.length > 0) setLocalUsers(u);
+            });
+          }
+        })
+        .catch(err => console.warn("AdminReviewMode fallback users fetch failed:", err));
+    }
+  }, [users]);
+
+  const activeUsersList = (localUsers && localUsers.length > 0) ? localUsers : users;
 
   // Compute Summary Statistics
   const stats = useMemo(() => {
@@ -243,24 +294,7 @@ export default function AdminReviewMode({
 
   // Helper to render user options for Assigned To dropdown:
   // Active users + TBD + current assignee (even if inactive)
-  const renderUserOptions = (item) => {
-    const activeUsers = users.filter(u => u.is_active !== 0);
-    const isCurrentAssigneeInactive = item.assigned_to_user_id && !activeUsers.some(u => u.id === item.assigned_to_user_id);
-    const inactiveAssignee = isCurrentAssigneeInactive ? users.find(u => u.id === item.assigned_to_user_id) : null;
-
-    return (
-      <>
-        <option value="">— Unassigned —</option>
-        <option value="tbd">TBD</option>
-        {activeUsers.map(u => (
-          <option key={u.id} value={u.id}>{u.name}</option>
-        ))}
-        {inactiveAssignee && (
-          <option key={inactiveAssignee.id} value={inactiveAssignee.id}>{inactiveAssignee.name} (Inactive)</option>
-        )}
-      </>
-    );
-  };
+  const renderUserOptions = (item) => renderUserSelectOptions(item, activeUsersList);
 
   // Inline table assignment save handler
   const handleInlineAssign = async (item, selectedValue) => {
@@ -285,8 +319,8 @@ export default function AdminReviewMode({
         destinationName = 'TBD';
       } else if (selectedValue) {
         recipientUserId = selectedValue;
-        destinationType = 'family';
-        const userObj = users.find(u => u.id === selectedValue);
+        const userObj = activeUsersList.find(u => u.id === selectedValue);
+        destinationType = userObj?.role === 'institution' ? 'institution' : 'family';
         destinationName = userObj ? userObj.name : null;
       }
 
@@ -1074,7 +1108,7 @@ export default function AdminReviewMode({
         <DrillDownModal
           item={currentDrillDownItem}
           categories={categories}
-          users={users}
+          users={activeUsersList}
           currentIndex={currentDrillDownIndex}
           totalInFilter={filteredItems.length}
           onSave={onSaveItem}
@@ -1411,8 +1445,8 @@ function DrillDownModal({
         destinationName = 'TBD';
       } else if (val) {
         recipientUserId = val;
-        destinationType = 'family';
         const u = users.find(usr => usr.id === val);
+        destinationType = u?.role === 'institution' ? 'institution' : 'family';
         destinationName = u ? u.name : null;
       }
 
@@ -1887,7 +1921,7 @@ function DrillDownModal({
                   }}
                   title={item.is_locked === 1 ? "Assignment is locked. Click Unlock to make changes." : "Assign to person or TBD"}
                 >
-                  {renderUserOptions(item)}
+                  {renderUserSelectOptions(item, users)}
                 </select>
               </div>
             </div>
