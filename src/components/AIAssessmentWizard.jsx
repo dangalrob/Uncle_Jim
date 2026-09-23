@@ -26,6 +26,7 @@ export default function AIAssessmentWizard({
   // Step 1: Photos
   const [photos, setPhotos] = useState([]); // Array of { file, previewUrl, label }
   const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
   const detailInputRef = useRef(null);
 
   // Step 2: Guided Questionnaire State
@@ -44,25 +45,36 @@ export default function AIAssessmentWizard({
   const [generateError, setGenerateError] = useState(null);
   const [proposedAssessment, setProposedAssessment] = useState(null);
 
-  // Editable fields in Step 4
+  // Editable fields in Step 4 (Single Permanent Item Record Schema)
   const [editableFields, setEditableFields] = useState({
     title: '',
+    object_type: '',
     description: '',
     origin: '',
     era: '',
     materials: '',
     maker: '',
+    model: '',
     identifying_marks: '',
+    historical_cultural_context: '',
+    acquisition_context: '',
+    jim_connection_type: 'UNKNOWN',
+    jim_connection_notes: '',
     provenance_text: '',
     dimensions: '',
     condition: '',
+    legacy_significance: 'none',
+    legacy_significance_reason: '',
+    assessment_confidence: 'MEDIUM',
+    confidence_reason: '',
+    verification_needed: '',
+    follow_up_worthwhile: '',
+    assessment_version: 'ITEM_ASSESSMENT_V1',
     estimated_value_low: '',
     estimated_value_high: '',
     value_basis: '',
     distribution_value: '',
     counts_against_distribution: false,
-    assessment_confidence: 'MEDIUM',
-    confidence_reason: '',
     appraisal_recommended: false,
     appraisal_reason: ''
   });
@@ -153,25 +165,36 @@ export default function AIAssessmentWizard({
       const exceeds = highVal !== null && highVal >= (data.threshold || threshold);
 
       setEditableFields({
-        title: a.proposedTitle || existingItem?.title || '',
-        description: a.cleanDescription || existingItem?.description || '',
-        origin: a.origin || existingItem?.origin || '',
-        era: a.era || existingItem?.era || '',
-        materials: a.materials || existingItem?.materials || '',
-        maker: a.maker || existingItem?.maker || '',
-        identifying_marks: a.identifyingMarks || existingItem?.identifying_marks || '',
-        provenance_text: a.provenanceNotes || existingItem?.provenance_text || '',
-        dimensions: a.dimensions || guidedAnswers.dimensions || existingItem?.dimensions || '',
-        condition: a.condition || guidedAnswers.conditionNotes || existingItem?.condition || '',
-        estimated_value_low: a.estimatedValueLow !== null && a.estimatedValueLow !== undefined ? a.estimatedValueLow : '',
-        estimated_value_high: a.estimatedValueHigh !== null && a.estimatedValueHigh !== undefined ? a.estimatedValueHigh : '',
-        value_basis: a.valueBasis || '',
+        title: a.proposedTitle || a.identification?.proposedTitle || existingItem?.title || '',
+        object_type: a.objectType || a.identification?.objectType || existingItem?.object_type || '',
+        description: a.cleanDescription || a.description?.cleanDescription || existingItem?.description || '',
+        origin: a.origin || a.attributes?.origin || existingItem?.origin || '',
+        era: a.era || a.attributes?.era || existingItem?.era || '',
+        materials: a.materials || a.attributes?.materials || existingItem?.materials || '',
+        maker: a.maker || a.attributes?.maker || existingItem?.maker || '',
+        model: a.model || a.attributes?.model || existingItem?.model || '',
+        identifying_marks: a.identifyingMarks || a.attributes?.identifyingMarks || existingItem?.identifying_marks || '',
+        historical_cultural_context: a.historicalCulturalContext || a.historicalContext?.historicalCulturalContext || existingItem?.historical_cultural_context || '',
+        acquisition_context: a.acquisitionContext || a.historicalContext?.acquisitionContext || a.plausibleTravelConnection || existingItem?.acquisition_context || '',
+        jim_connection_type: a.jimConnectionType || a.provenance?.jimConnectionType || existingItem?.jim_connection_type || 'UNKNOWN',
+        jim_connection_notes: a.jimConnectionNotes || a.provenance?.jimConnectionNotes || existingItem?.jim_connection_notes || '',
+        provenance_text: a.provenanceNotes || a.provenance?.provenanceText || existingItem?.provenance_text || '',
+        dimensions: a.dimensions || a.attributes?.dimensions || guidedAnswers.dimensions || existingItem?.dimensions || '',
+        condition: a.condition || a.attributes?.condition || guidedAnswers.conditionNotes || existingItem?.condition || '',
+        legacy_significance: a.legacySignificance || a.legacy?.significance || existingItem?.legacy_significance || 'none',
+        legacy_significance_reason: a.legacySignificanceReason || a.legacy?.significanceReason || existingItem?.legacy_significance_reason || '',
+        assessment_confidence: a.assessmentConfidence || a.identification?.confidence || 'MEDIUM',
+        confidence_reason: a.confidenceReason || a.identification?.confidenceReason || '',
+        verification_needed: a.verificationNeeded || a.verification?.verificationNeeded || existingItem?.verification_needed || '',
+        follow_up_worthwhile: a.followUpWorthwhile || a.verification?.followUpWorthwhile || existingItem?.follow_up_worthwhile || '',
+        assessment_version: 'ITEM_ASSESSMENT_V1',
+        estimated_value_low: a.estimatedValueLow !== null && a.estimatedValueLow !== undefined ? a.estimatedValueLow : (existingItem?.estimated_value_low || ''),
+        estimated_value_high: a.estimatedValueHigh !== null && a.estimatedValueHigh !== undefined ? a.estimatedValueHigh : (existingItem?.estimated_value_high || ''),
+        value_basis: a.valueBasis || existingItem?.value_basis || '',
         distribution_value: existingItem?.distribution_value || '',
-        counts_against_distribution: exceeds || existingItem?.counts_against_distribution || false,
-        assessment_confidence: a.assessmentConfidence || 'MEDIUM',
-        confidence_reason: a.confidenceReason || '',
-        appraisal_recommended: a.appraisalRecommended || false,
-        appraisal_reason: a.appraisalReason || ''
+        counts_against_distribution: Boolean(existingItem?.counts_against_distribution),
+        appraisal_recommended: Boolean(a.appraisalRecommended || existingItem?.appraisal_recommended),
+        appraisal_reason: a.appraisalReason || existingItem?.appraisal_reason || ''
       });
 
       setStep(4);
@@ -344,7 +367,31 @@ export default function AIAssessmentWizard({
                 </div>
               ))}
 
-              {/* Add Primary / Photo Button */}
+              {/* Add Photo via Camera or File Pickers */}
+              <div
+                onClick={() => cameraInputRef.current?.click()}
+                style={{
+                  height: '170px',
+                  borderRadius: '10px',
+                  border: '2px dashed var(--pine-primary)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  background: '#f0fdf4',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <Camera size={30} color="var(--pine-primary)" style={{ marginBottom: '6px' }} />
+                <span style={{ fontSize: '0.84rem', fontWeight: 'bold', color: 'var(--pine-deep)' }}>
+                  Take Photo (Camera)
+                </span>
+                <span style={{ fontSize: '0.72rem', color: '#166534', marginTop: '2px' }}>
+                  Mobile / Tablet camera intake
+                </span>
+              </div>
+
               <div
                 onClick={() => fileInputRef.current?.click()}
                 style={{
@@ -360,15 +407,24 @@ export default function AIAssessmentWizard({
                   transition: 'all 0.2s'
                 }}
               >
-                <Camera size={28} color="#64748b" style={{ marginBottom: '6px' }} />
-                <span style={{ fontSize: '0.82rem', fontWeight: 'bold', color: '#475569' }}>
-                  {photos.length === 0 ? '+ Add Overview Photo' : '+ Add Additional Photo'}
+                <Upload size={28} color="#64748b" style={{ marginBottom: '6px' }} />
+                <span style={{ fontSize: '0.84rem', fontWeight: 'bold', color: '#475569' }}>
+                  Upload Existing Photos
                 </span>
                 <span style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '2px' }}>
-                  Supports JPEG, PNG, WebP
+                  Select files from computer / disk
                 </span>
               </div>
             </div>
+
+            <input
+              type="file"
+              ref={cameraInputRef}
+              accept="image/*"
+              capture="environment"
+              style={{ display: 'none' }}
+              onChange={(e) => handleAddPhoto(e, photos.length === 0 ? 'Primary Overview' : 'Detail View')}
+            />
 
             <input
               type="file"
@@ -564,18 +620,32 @@ export default function AIAssessmentWizard({
               </div>
             )}
 
-            {/* SECTION 1: PROPOSED TITLE & CLEAN DESCRIPTION */}
+            {/* SECTION 1: PROPOSED TITLE, OBJECT TYPE & CLEAN DESCRIPTION */}
             <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '1.25rem', marginBottom: '1.25rem' }}>
-              <div style={{ marginBottom: '0.85rem' }}>
-                <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 'bold', color: '#334155', marginBottom: '4px' }}>
-                  Item Title *
-                </label>
-                <input
-                  type="text"
-                  value={editableFields.title}
-                  onChange={(e) => setEditableFields(p => ({ ...p, title: e.target.value }))}
-                  style={{ width: '100%', padding: '0.6rem 0.75rem', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.95rem', fontWeight: 'bold' }}
-                />
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem', marginBottom: '0.85rem' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 'bold', color: '#334155', marginBottom: '4px' }}>
+                    Item Title *
+                  </label>
+                  <input
+                    type="text"
+                    value={editableFields.title}
+                    onChange={(e) => setEditableFields(p => ({ ...p, title: e.target.value }))}
+                    style={{ width: '100%', padding: '0.6rem 0.75rem', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.95rem', fontWeight: 'bold' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 'bold', color: '#334155', marginBottom: '4px' }}>
+                    Object Type
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Navigational Instrument"
+                    value={editableFields.object_type}
+                    onChange={(e) => setEditableFields(p => ({ ...p, object_type: e.target.value }))}
+                    style={{ width: '100%', padding: '0.6rem 0.75rem', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.95rem' }}
+                  />
+                </div>
               </div>
 
               <div>

@@ -12,6 +12,7 @@ import nodemailer from 'nodemailer';
 import { fileURLToPath } from 'url';
 import { extractLegacyData } from './services/legacyNormalization.js';
 import { generateAIAssessment } from './services/aiAssessment.js';
+import { assessItem } from './services/itemAssessmentEngine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -224,6 +225,11 @@ async function initDatabase() {
     db.run(`ALTER TABLE items ADD COLUMN legacy_significance TEXT DEFAULT 'none'`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN legacy_significance_reason TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN verification_needed TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN object_type TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN model TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN historical_cultural_context TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN follow_up_worthwhile TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN assessment_version TEXT DEFAULT 'ITEM_ASSESSMENT_V1'`, () => {});
 
     // 2. Estates Table Additions (Configurable distribution threshold)
     db.run(`ALTER TABLE estates ADD COLUMN distribution_threshold_value REAL DEFAULT 100.0`, () => {});
@@ -3006,7 +3012,7 @@ app.get('/api/admin/normalize/items', authenticateToken, requireRole(['admin']),
 app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const { itemId } = req.params;
-    const { overrideResearchLevel } = req.body || {};
+    const { overrideResearchLevel, adminAnswers = {}, roundNumber = 1 } = req.body || {};
     const estateId = req.user.estate_id;
 
     const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
@@ -3058,15 +3064,38 @@ app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(
       [itemId]
     );
 
+    // Retrieve existing photos for multimodal evidence
+    const itemPhotos = await dbAll(
+      `SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`,
+      [itemId]
+    );
+    const photoFiles = [];
+    for (const p of itemPhotos) {
+      if (p.photo_url) {
+        const relPath = p.photo_url.replace(/^\/uploads\//, '');
+        const diskPath = path.join(UPLOADS_DIR, relPath);
+        if (fs.existsSync(diskPath)) {
+          photoFiles.push({
+            path: diskPath,
+            label: p.is_primary ? 'Primary Photo' : 'Detail Photo',
+            mimetype: diskPath.endsWith('.png') ? 'image/png' : (diskPath.endsWith('.webp') ? 'image/webp' : 'image/jpeg')
+          });
+        }
+      }
+    }
+
     // Assemble rich evidence bundle to prevent recursive normalization of old AI prose
     const isRenormalization = Boolean(existingBaseline) || item.normalization_status === 'normalized' || Boolean(item.legacy_assessment_notes);
     const evidenceBundle = {
       item,
       baseline: existingBaseline || null,
+      photos: photoFiles,
       researchSources: researchSources || [],
+      adminAnswers: adminAnswers || {},
       isRenormalization,
       evidenceSources: {
         hasBaseline: Boolean(existingBaseline),
+        hasPhotos: photoFiles.length > 0,
         hasApprovedFacts: Boolean(item.maker || item.dimensions || item.materials || item.origin || item.era),
         hasResearchSources: Boolean(researchSources && researchSources.length > 0),
         isRenormalization
@@ -3074,7 +3103,7 @@ app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(
     };
 
     // Run extraction service with structured evidence bundle
-    const proposed = await extractLegacyData(evidenceBundle, process.env.GEMINI_API_KEY, overrideResearchLevel);
+    const proposed = await extractLegacyData(evidenceBundle, process.env.GEMINI_API_KEY, overrideResearchLevel, adminAnswers, roundNumber);
 
     // Check estate distribution threshold ($100 default)
     const estate = await dbGet(`SELECT distribution_threshold_value FROM estates WHERE id = ?`, [estateId]);
@@ -3100,6 +3129,7 @@ app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(
         era: item.era,
         materials: item.materials,
         maker: item.maker,
+        model: item.model,
         identifying_marks: item.identifying_marks,
         provenance_text: item.provenance_text,
         dimensions: item.dimensions,
@@ -3114,17 +3144,127 @@ app.post('/api/admin/normalize/extract/:itemId', authenticateToken, requireRole(
         identification_confidence: item.identification_confidence,
         value_confidence: item.value_confidence,
         acquisition_context: item.acquisition_context,
+        historical_cultural_context: item.historical_cultural_context,
         jim_connection_type: item.jim_connection_type || 'UNKNOWN',
         jim_connection_notes: item.jim_connection_notes,
         legacy_significance: item.legacy_significance || 'none',
         legacy_significance_reason: item.legacy_significance_reason,
-        verification_needed: item.verification_needed
+        verification_needed: item.verification_needed,
+        follow_up_worthwhile: item.follow_up_worthwhile,
+        object_type: item.object_type,
+        assessment_version: item.assessment_version
       },
       proposed
     });
   } catch (err) {
     console.error('Extract legacy data error:', err);
     res.status(500).json({ error: 'Failed to extract legacy data: ' + err.message });
+  }
+});
+
+// Re-evaluate assessment with Admin answers, additional uploaded photos, or updated evidence
+app.post('/api/admin/assessment/evaluate', authenticateToken, requireRole(['admin']), upload.any(), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const {
+      itemId,
+      mode = 'LEGACY_NORMALIZATION',
+      adminAnswersJson,
+      confirmedAttributesJson,
+      researchLevelOverride,
+      roundNumber = 1
+    } = req.body;
+
+    let adminAnswers = {};
+    if (adminAnswersJson) {
+      try {
+        adminAnswers = typeof adminAnswersJson === 'string' ? JSON.parse(adminAnswersJson) : adminAnswersJson;
+      } catch (e) {}
+    }
+
+    let confirmedAttributes = {};
+    if (confirmedAttributesJson) {
+      try {
+        confirmedAttributes = typeof confirmedAttributesJson === 'string' ? JSON.parse(confirmedAttributesJson) : confirmedAttributesJson;
+      } catch (e) {}
+    }
+
+    let existingItem = null;
+    let existingBaseline = null;
+    let existingPhotos = [];
+    let researchSources = [];
+
+    if (itemId) {
+      existingItem = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+      existingBaseline = await dbGet(
+        `SELECT * FROM item_legacy_snapshots WHERE item_id = ? AND snapshot_type = 'PRE_NORMALIZATION_BASELINE' ORDER BY created_at ASC LIMIT 1`,
+        [itemId]
+      );
+      existingPhotos = await dbAll(`SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`, [itemId]);
+      researchSources = await dbAll(`SELECT * FROM item_research_sources WHERE item_id = ? ORDER BY created_at DESC`, [itemId]);
+    }
+
+    // Assemble photos (uploaded + existing)
+    const reqFiles = (req.files || []).map(f => ({
+      path: f.path,
+      fieldname: f.fieldname,
+      originalname: f.originalname,
+      mimetype: f.mimetype
+    }));
+
+    if (existingPhotos.length > 0) {
+      for (const ep of existingPhotos) {
+        if (ep.photo_url) {
+          const relPath = ep.photo_url.replace(/^\/uploads\//, '');
+          const diskPath = path.join(UPLOADS_DIR, relPath);
+          if (fs.existsSync(diskPath)) {
+            reqFiles.push({
+              path: diskPath,
+              label: ep.is_primary ? 'Primary Photo' : 'Detail Photo',
+              mimetype: diskPath.endsWith('.png') ? 'image/png' : (diskPath.endsWith('.webp') ? 'image/webp' : 'image/jpeg')
+            });
+          }
+        }
+      }
+    }
+
+    const evidence = {
+      item: existingItem || {},
+      baseline: existingBaseline || null,
+      photos: reqFiles,
+      researchSources,
+      adminAnswers,
+      confirmedAttributes: {
+        ...(existingItem ? {
+          maker: existingItem.maker,
+          model: existingItem.model,
+          materials: existingItem.materials,
+          origin: existingItem.origin,
+          era: existingItem.era,
+          dimensions: existingItem.dimensions,
+          condition: existingItem.condition,
+          identifying_marks: existingItem.identifying_marks
+        } : {}),
+        ...confirmedAttributes
+      }
+    };
+
+    const assessment = await assessItem({
+      mode,
+      evidence,
+      researchLevelOverride: researchLevelOverride || null,
+      roundNumber: parseInt(roundNumber, 10) || 1,
+      apiKey: process.env.GEMINI_API_KEY
+    });
+
+    res.json({
+      success: true,
+      assessment,
+      uploadedPhotoPaths: (req.files || []).map(f => f.path)
+    });
+  } catch (err) {
+    console.error('Assessment evaluation error:', err);
+    res.status(500).json({ error: 'Failed to evaluate assessment: ' + err.message });
   }
 });
 
@@ -3215,6 +3355,12 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
     const appraisalRecommended = approvedFields.appraisal_recommended ? 1 : 0;
     const appraisalReason = approvedFields.appraisal_reason || null;
 
+    const model = approvedFields.model !== undefined ? approvedFields.model : currentItem.model;
+    const objectType = approvedFields.object_type || approvedFields.objectType || currentItem.object_type || null;
+    const historicalCulturalContext = approvedFields.historical_cultural_context !== undefined ? approvedFields.historical_cultural_context : (approvedFields.historicalCulturalContext || currentItem.historical_cultural_context || null);
+    const followUpWorthwhile = approvedFields.follow_up_worthwhile !== undefined ? approvedFields.follow_up_worthwhile : (approvedFields.followUpWorthwhile || currentItem.follow_up_worthwhile || null);
+    const assessmentVersion = approvedFields.assessment_version || 'ITEM_ASSESSMENT_V1';
+
     // Update the item record
     await dbRun(`
       UPDATE items SET
@@ -3224,6 +3370,7 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
         era = ?,
         materials = ?,
         maker = ?,
+        model = ?,
         identifying_marks = ?,
         provenance_text = ?,
         dimensions = ?,
@@ -3242,11 +3389,15 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
         identification_confidence = ?,
         value_confidence = ?,
         acquisition_context = ?,
+        historical_cultural_context = ?,
         jim_connection_type = ?,
         jim_connection_notes = ?,
         legacy_significance = ?,
         legacy_significance_reason = ?,
         verification_needed = ?,
+        follow_up_worthwhile = ?,
+        object_type = ?,
+        assessment_version = ?,
         legacy_assessment_notes = ?,
         special_handling_notes = '',
         normalization_status = 'normalized',
@@ -3261,6 +3412,7 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
       era,
       materials,
       maker,
+      model,
       identifyingMarks,
       provenanceText,
       dimensions,
@@ -3279,11 +3431,15 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
       identificationConfidence,
       valueConfidence,
       acquisitionContext,
+      historicalCulturalContext,
       jimConnectionType,
       jimConnectionNotes,
       legacySignificance,
       legacySignificanceReason,
       verificationNeeded,
+      followUpWorthwhile,
+      objectType,
+      assessmentVersion,
       legacyArchiveNotes,
       itemId,
       estateId
@@ -3523,16 +3679,22 @@ app.post('/api/admin/assess/approve', authenticateToken, requireRole(['admin']),
 
       await dbRun(`
         INSERT INTO items (
-          id, estate_id, item_number, title, description, origin, era, materials, maker,
+          id, estate_id, item_number, title, description, origin, era, materials, maker, model,
           identifying_marks, provenance_text, dimensions, condition, estimated_value_low,
           estimated_value_high, distribution_value, counts_against_distribution, value_basis,
           assessment_confidence, confidence_reason, appraisal_recommended, appraisal_reason,
+          object_type, historical_cultural_context, follow_up_worthwhile, assessment_version,
+          jim_connection_type, jim_connection_notes, legacy_significance, legacy_significance_reason,
+          verification_needed, normalization_status,
           assessment_status, assessment_date, status, created_at, updated_at
         ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?,
           ?, ?, ?, ?,
+          ?, ?, ?, ?,
+          ?, ?, ?, ?,
+          ?, 'normalized',
           'completed', CURRENT_TIMESTAMP, 'draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )
       `, [
@@ -3545,6 +3707,7 @@ app.post('/api/admin/assess/approve', authenticateToken, requireRole(['admin']),
         approvedFields.era || null,
         approvedFields.materials || null,
         approvedFields.maker || null,
+        approvedFields.model || null,
         approvedFields.identifying_marks || null,
         approvedFields.provenance_text || null,
         approvedFields.dimensions || null,
@@ -3557,7 +3720,16 @@ app.post('/api/admin/assess/approve', authenticateToken, requireRole(['admin']),
         approvedFields.assessment_confidence || 'MEDIUM',
         approvedFields.confidence_reason || null,
         approvedFields.appraisal_recommended ? 1 : 0,
-        approvedFields.appraisal_reason || null
+        approvedFields.appraisal_reason || null,
+        approvedFields.object_type || approvedFields.objectType || null,
+        approvedFields.historical_cultural_context || approvedFields.historicalCulturalContext || null,
+        approvedFields.follow_up_worthwhile || approvedFields.followUpWorthwhile || null,
+        approvedFields.assessment_version || 'ITEM_ASSESSMENT_V1',
+        approvedFields.jim_connection_type || 'UNKNOWN',
+        approvedFields.jim_connection_notes || null,
+        approvedFields.legacy_significance || 'none',
+        approvedFields.legacy_significance_reason || null,
+        approvedFields.verification_needed || null
       ]);
     } else {
       // Update existing item
@@ -3572,6 +3744,7 @@ app.post('/api/admin/assess/approve', authenticateToken, requireRole(['admin']),
           era = COALESCE(?, era),
           materials = COALESCE(?, materials),
           maker = COALESCE(?, maker),
+          model = COALESCE(?, model),
           identifying_marks = COALESCE(?, identifying_marks),
           provenance_text = COALESCE(?, provenance_text),
           dimensions = COALESCE(?, dimensions),
@@ -3585,6 +3758,16 @@ app.post('/api/admin/assess/approve', authenticateToken, requireRole(['admin']),
           confidence_reason = ?,
           appraisal_recommended = ?,
           appraisal_reason = ?,
+          object_type = COALESCE(?, object_type),
+          historical_cultural_context = COALESCE(?, historical_cultural_context),
+          follow_up_worthwhile = COALESCE(?, follow_up_worthwhile),
+          assessment_version = 'ITEM_ASSESSMENT_V1',
+          jim_connection_type = COALESCE(?, jim_connection_type),
+          jim_connection_notes = COALESCE(?, jim_connection_notes),
+          legacy_significance = COALESCE(?, legacy_significance),
+          legacy_significance_reason = COALESCE(?, legacy_significance_reason),
+          verification_needed = COALESCE(?, verification_needed),
+          normalization_status = 'normalized',
           assessment_status = 'completed',
           assessment_date = CURRENT_TIMESTAMP,
           updated_at = CURRENT_TIMESTAMP
@@ -3596,6 +3779,7 @@ app.post('/api/admin/assess/approve', authenticateToken, requireRole(['admin']),
         approvedFields.era !== undefined ? approvedFields.era : null,
         approvedFields.materials !== undefined ? approvedFields.materials : null,
         approvedFields.maker !== undefined ? approvedFields.maker : null,
+        approvedFields.model !== undefined ? approvedFields.model : null,
         approvedFields.identifying_marks !== undefined ? approvedFields.identifying_marks : null,
         approvedFields.provenance_text !== undefined ? approvedFields.provenance_text : null,
         approvedFields.dimensions !== undefined ? approvedFields.dimensions : null,
@@ -3609,6 +3793,14 @@ app.post('/api/admin/assess/approve', authenticateToken, requireRole(['admin']),
         approvedFields.confidence_reason || currentItem.confidence_reason || null,
         approvedFields.appraisal_recommended ? 1 : 0,
         approvedFields.appraisal_reason || null,
+        approvedFields.object_type || approvedFields.objectType || null,
+        approvedFields.historical_cultural_context || approvedFields.historicalCulturalContext || null,
+        approvedFields.follow_up_worthwhile || approvedFields.followUpWorthwhile || null,
+        approvedFields.jim_connection_type || null,
+        approvedFields.jim_connection_notes || null,
+        approvedFields.legacy_significance || null,
+        approvedFields.legacy_significance_reason || null,
+        approvedFields.verification_needed || null,
         itemId,
         estateId
       ]);
