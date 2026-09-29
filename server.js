@@ -3329,6 +3329,7 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
     const provenanceText = approvedFields.provenance_text !== undefined ? approvedFields.provenance_text : currentItem.provenance_text;
     const dimensions = approvedFields.dimensions !== undefined ? approvedFields.dimensions : currentItem.dimensions;
     const condition = approvedFields.condition !== undefined ? approvedFields.condition : currentItem.condition;
+    const value = approvedFields.value !== undefined ? approvedFields.value : currentItem.value;
     
     // Numeric valuation separation
     const estValLow = approvedFields.estimated_value_low !== undefined ? (parseFloat(approvedFields.estimated_value_low) || null) : currentItem.estimated_value_low;
@@ -3375,6 +3376,7 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
         provenance_text = ?,
         dimensions = ?,
         condition = ?,
+        value = ?,
         estimated_value_low = ?,
         estimated_value_high = ?,
         distribution_value = ?,
@@ -3417,6 +3419,7 @@ app.post('/api/admin/normalize/approve/:itemId', authenticateToken, requireRole(
       provenanceText,
       dimensions,
       condition,
+      value,
       estValLow,
       estValHigh,
       distributionValue,

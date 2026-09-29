@@ -558,7 +558,12 @@ Respond with strict JSON matching the schema.`;
         },
         questions: parsed.questions,
         adminAnswers,
-        researchSources: allSources
+        researchSources: allSources,
+        valuation: {
+          value: item.value || null,
+          estimatedValueLow: item.estimated_value_low || null,
+          estimatedValueHigh: item.estimated_value_high || null
+        }
       };
     } catch (err) {
       console.warn(`[ItemAssessmentEngine] Attempt with ${model} failed:`, err.message);
@@ -669,6 +674,11 @@ function restrictedDeterministicFallback({
     },
     questions: [], // Never interrogate Admin in offline fallback
     adminAnswers,
-    researchSources: allSources
+    researchSources: allSources,
+    valuation: {
+      value: item.value || null,
+      estimatedValueLow: item.estimated_value_low || null,
+      estimatedValueHigh: item.estimated_value_high || null
+    }
   };
 }

@@ -68,6 +68,7 @@ export default function LegacyNormalizationWizard({
     identification_confidence_reason: '',
     verification_needed: '',
     follow_up_worthwhile: '',
+    value: '',
     // Existing values preserved
     estimated_value_low: '',
     estimated_value_high: '',
@@ -188,6 +189,7 @@ export default function LegacyNormalizationWizard({
         identification_confidence_reason: p.identificationConfidenceReason || '',
         verification_needed: p.verificationNeeded || o.verification_needed || '',
         follow_up_worthwhile: p.followUpWorthwhile || o.follow_up_worthwhile || '',
+        value: p.value || p.estimatedValue || o.value || '',
         // Existing valuation preserved
         estimated_value_low: o.estimated_value_low || '',
         estimated_value_high: o.estimated_value_high || '',
@@ -203,7 +205,7 @@ export default function LegacyNormalizationWizard({
       [
         'title', 'object_type', 'description', 'origin', 'era', 'materials', 'maker', 'model',
         'identifying_marks', 'historical_cultural_context', 'acquisition_context', 'jim_connection',
-        'provenance_text', 'dimensions', 'condition', 'legacy_significance', 'verification_needed',
+        'provenance_text', 'dimensions', 'condition', 'value', 'legacy_significance', 'verification_needed',
         'follow_up_worthwhile'
       ].forEach(k => { modes[k] = 'proposed'; });
       setFieldMode(modes);
@@ -318,7 +320,8 @@ export default function LegacyNormalizationWizard({
         identification_confidence: a.identification?.confidence || a.identificationConfidence || prev.identification_confidence,
         identification_confidence_reason: a.identification?.confidenceReason || a.identificationConfidenceReason || '',
         verification_needed: a.verification?.verificationNeeded || a.verificationNeeded || prev.verification_needed,
-        follow_up_worthwhile: a.verification?.followUpWorthwhile || a.followUpWorthwhile || prev.follow_up_worthwhile
+        follow_up_worthwhile: a.verification?.followUpWorthwhile || a.followUpWorthwhile || prev.follow_up_worthwhile,
+        value: a.valuation?.value || a.value || prev.value
       }));
 
       // If follow-up questions were generated for round 2, give option to continue or prepare now
@@ -378,14 +381,15 @@ export default function LegacyNormalizationWizard({
       legacy_significance_reason: p.legacySignificanceReason || p.legacy?.significanceReason || prev.legacy_significance_reason,
       identification_confidence: p.identificationConfidence || p.identification?.confidence || prev.identification_confidence,
       verification_needed: p.verificationNeeded || p.verification?.verificationNeeded || prev.verification_needed,
-      follow_up_worthwhile: p.followUpWorthwhile || p.verification?.followUpWorthwhile || prev.follow_up_worthwhile
+      follow_up_worthwhile: p.followUpWorthwhile || p.verification?.followUpWorthwhile || prev.follow_up_worthwhile,
+      value: p.value || p.estimatedValue || prev.value
     }));
 
     const modes = {};
     [
       'title', 'object_type', 'description', 'origin', 'era', 'materials', 'maker', 'model',
       'identifying_marks', 'historical_cultural_context', 'acquisition_context', 'jim_connection',
-      'provenance_text', 'dimensions', 'condition', 'legacy_significance', 'verification_needed',
+      'provenance_text', 'dimensions', 'condition', 'value', 'legacy_significance', 'verification_needed',
       'follow_up_worthwhile'
     ].forEach(k => { modes[k] = 'proposed'; });
     setFieldMode(modes);
@@ -469,7 +473,8 @@ export default function LegacyNormalizationWizard({
         follow_up_worthwhile: fields.follow_up_worthwhile,
         research_level: researchLevel,
         assessment_version: 'ITEM_ASSESSMENT_V1',
-        // Existing valuation preserved
+        // Existing valuation
+        value: fields.value,
         estimated_value_low: fields.estimated_value_low,
         estimated_value_high: fields.estimated_value_high,
         distribution_value: fields.distribution_value,
@@ -1227,6 +1232,16 @@ export default function LegacyNormalizationWizard({
                   />
                 </div>
                 <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#475569', marginBottom: '2px' }}>Estimated Value</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. $30–$55 or $150–$400+"
+                    value={fields.value}
+                    onChange={e => handleFieldChange('value', e.target.value)}
+                    style={{ width: '100%', padding: '0.45rem 0.65rem', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.88rem' }}
+                  />
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
                   <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#475569', marginBottom: '2px' }}>Identifying Marks / Hallmarks</label>
                   <input
                     type="text"
