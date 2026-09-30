@@ -3767,7 +3767,7 @@ export default function App() {
                 const q = searchQuery.toLowerCase().trim();
                 const title = (item.title || '').toLowerCase();
                 const desc = (item.description || '').toLowerCase();
-                const notes = (item.notes || '').toLowerCase();
+                const notes = (item.special_handling_notes || item.notes || '').toLowerCase();
                 const catName = (item.category_name || '').toLowerCase();
                 const itemNum = (item.item_number || '').toLowerCase();
                 const dest = (item.destination || item.destination_name || '').toLowerCase();

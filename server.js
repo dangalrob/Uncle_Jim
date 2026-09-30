@@ -1220,7 +1220,7 @@ app.get('/api/items', authenticateToken, async (req, res) => {
     }
 
     if (search) {
-      query += ` AND (i.title LIKE ? OR i.description LIKE ? OR i.location_in_house LIKE ? OR i.notes LIKE ? OR i.item_number LIKE ? OR c.name LIKE ? OR i.destination LIKE ? OR i.institutional_name LIKE ?)`;
+      query += ` AND (i.title LIKE ? OR i.description LIKE ? OR i.location_in_house LIKE ? OR i.special_handling_notes LIKE ? OR i.item_number LIKE ? OR c.name LIKE ? OR i.destination LIKE ? OR i.institutional_name LIKE ?)`;
       const s = `%${search}%`;
       params.push(s, s, s, s, s, s, s, s);
     }
