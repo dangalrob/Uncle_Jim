@@ -35,9 +35,11 @@ const DATA_DIR = path.join(STORAGE_ROOT, 'data');
 const UPLOADS_DIR = path.join(STORAGE_ROOT, 'uploads');
 const FULL_UPLOADS_DIR = path.join(UPLOADS_DIR, 'full');
 const THUMB_UPLOADS_DIR = path.join(UPLOADS_DIR, 'thumbs');
+const MUSEUM_UPLOADS_DIR = path.join(UPLOADS_DIR, 'museum');
+const MUSEUM_THUMB_UPLOADS_DIR = path.join(UPLOADS_DIR, 'museum', 'thumbs');
 const BACKUPS_DIR = path.join(STORAGE_ROOT, 'backups');
 
-[DATA_DIR, UPLOADS_DIR, FULL_UPLOADS_DIR, THUMB_UPLOADS_DIR, BACKUPS_DIR].forEach(dir => {
+[DATA_DIR, UPLOADS_DIR, FULL_UPLOADS_DIR, THUMB_UPLOADS_DIR, MUSEUM_UPLOADS_DIR, MUSEUM_THUMB_UPLOADS_DIR, BACKUPS_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -230,6 +232,11 @@ async function initDatabase() {
     db.run(`ALTER TABLE items ADD COLUMN historical_cultural_context TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN follow_up_worthwhile TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN assessment_version TEXT DEFAULT 'ITEM_ASSESSMENT_V1'`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN museum_photo_url TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN museum_photo_thumb_url TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN museum_photo_updated_at DATETIME`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN museum_photo_updated_by_user_id TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN museum_photo_updated_by_user_name TEXT`, () => {});
 
     // 2. Estates Table Additions (Configurable distribution threshold)
     db.run(`ALTER TABLE estates ADD COLUMN distribution_threshold_value REAL DEFAULT 100.0`, () => {});
@@ -673,8 +680,8 @@ const handleRapidUpload = (req, res, next) => {
 
 const app = express();
 app.use(cors());
-app.use(cookieParser());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Serve static uploads with long-lived browser caching and ETags
 app.use('/uploads', express.static(UPLOADS_DIR, {
@@ -699,7 +706,7 @@ app.use(express.static(path.join(__dirname, 'dist'), {
 
 // Authentication Middleware
 const authenticateToken = async (req, res, next) => {
-  const token = req.cookies.uj_token || req.headers.authorization?.split(' ')[1];
+  const token = req.cookies?.uj_token || req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: "Authentication required" });
 
   try {
@@ -1589,6 +1596,147 @@ app.post('/api/items/:id/photos/:photoId/restore-crop', authenticateToken, requi
   } catch (err) {
     console.error("Failed to restore original photo:", err);
     res.status(500).json({ error: "Failed to restore original photo" });
+  }
+});
+
+// Middleware helper to handle either multipart or JSON for museum photo upload
+const handleMuseumPhotoUpload = (req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.includes('multipart/form-data')) {
+    upload.single('museumPhoto')(req, res, (err) => {
+      if (err) {
+        console.error('[MuseumPhoto Multer Error]:', err);
+        return res.status(400).json({ error: 'Failed to process uploaded file: ' + err.message });
+      }
+      next();
+    });
+  } else {
+    next();
+  }
+};
+
+// Endpoint: Upload / Set Museum Photo for an Item (Admin only)
+app.post('/api/admin/items/:id/museum-photo', authenticateToken, requireRole(['admin']), handleMuseumPhotoUpload, async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const estateId = req.user.estate_id;
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    let imageBuffer = null;
+
+    if (req.file) {
+      imageBuffer = fs.readFileSync(req.file.path);
+      try { fs.unlinkSync(req.file.path); } catch (e) {}
+    } else if (req.body && req.body.imageBase64) {
+      const matches = req.body.imageBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        imageBuffer = Buffer.from(matches[2], 'base64');
+      } else {
+        imageBuffer = Buffer.from(req.body.imageBase64, 'base64');
+      }
+    }
+
+    if (!imageBuffer || imageBuffer.length === 0) {
+      return res.status(400).json({ error: "No museum photo provided (file or base64)" });
+    }
+
+    if (!fs.existsSync(MUSEUM_UPLOADS_DIR)) fs.mkdirSync(MUSEUM_UPLOADS_DIR, { recursive: true });
+    if (!fs.existsSync(MUSEUM_THUMB_UPLOADS_DIR)) fs.mkdirSync(MUSEUM_THUMB_UPLOADS_DIR, { recursive: true });
+
+    const fileBase = `museum-${itemId}-${Date.now()}`;
+    const fullFilename = `${fileBase}.webp`;
+    const thumbFilename = `thumb-${fileBase}.webp`;
+
+    const fullPath = path.join(MUSEUM_UPLOADS_DIR, fullFilename);
+    const thumbPath = path.join(MUSEUM_THUMB_UPLOADS_DIR, thumbFilename);
+
+    await sharp(imageBuffer)
+      .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
+      .toFormat('webp', { quality: 90 })
+      .toFile(fullPath);
+
+    await sharp(imageBuffer)
+      .resize(400, 400, { fit: 'cover' })
+      .toFormat('webp', { quality: 80 })
+      .toFile(thumbPath);
+
+    const museumPhotoUrl = `/uploads/museum/${fullFilename}`;
+    const museumPhotoThumbUrl = `/uploads/museum/thumbs/${thumbFilename}`;
+
+    await dbRun(`
+      UPDATE items SET
+        museum_photo_url = ?,
+        museum_photo_thumb_url = ?,
+        museum_photo_updated_at = CURRENT_TIMESTAMP,
+        museum_photo_updated_by_user_id = ?,
+        museum_photo_updated_by_user_name = ?
+      WHERE id = ? AND estate_id = ?
+    `, [
+      museumPhotoUrl,
+      museumPhotoThumbUrl,
+      req.user.id,
+      req.user.name,
+      itemId,
+      estateId
+    ]);
+
+    const updatedItem = await dbGet(`
+      SELECT i.*, c.name as category_name, c.icon as category_icon,
+             (SELECT photo_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_photo,
+             (SELECT thumbnail_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_thumb
+      FROM items i
+      LEFT JOIN categories c ON i.category_id = c.id
+      WHERE i.id = ? AND i.estate_id = ?
+    `, [itemId, estateId]);
+
+    logAudit(estateId, req.user.id, 'SET_MUSEUM_PHOTO', 'items', itemId, {
+      museumPhotoUrl,
+      previousUrl: item.museum_photo_url || null
+    });
+
+    res.json({ success: true, item: updatedItem });
+  } catch (err) {
+    console.error("Failed to upload museum photo:", err);
+    res.status(500).json({ error: "Failed to upload museum photo: " + err.message });
+  }
+});
+
+// Endpoint: Delete / Clear Museum Photo from an Item (Admin only)
+app.delete('/api/admin/items/:id/museum-photo', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const estateId = req.user.estate_id;
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    await dbRun(`
+      UPDATE items SET
+        museum_photo_url = NULL,
+        museum_photo_thumb_url = NULL,
+        museum_photo_updated_at = CURRENT_TIMESTAMP,
+        museum_photo_updated_by_user_id = ?,
+        museum_photo_updated_by_user_name = ?
+      WHERE id = ? AND estate_id = ?
+    `, [req.user.id, req.user.name, itemId, estateId]);
+
+    const updatedItem = await dbGet(`
+      SELECT i.*, c.name as category_name, c.icon as category_icon,
+             (SELECT photo_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_photo,
+             (SELECT thumbnail_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_thumb
+      FROM items i
+      LEFT JOIN categories c ON i.category_id = c.id
+      WHERE i.id = ? AND i.estate_id = ?
+    `, [itemId, estateId]);
+
+    logAudit(estateId, req.user.id, 'DELETE_MUSEUM_PHOTO', 'items', itemId, {
+      clearedUrl: item.museum_photo_url || null
+    });
+
+    res.json({ success: true, item: updatedItem });
+  } catch (err) {
+    console.error("Failed to delete museum photo:", err);
+    res.status(500).json({ error: "Failed to delete museum photo" });
   }
 });
 

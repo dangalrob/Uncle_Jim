@@ -17,6 +17,7 @@ import InstitutionPortal from './components/InstitutionPortal';
 import PhotoCropperModal from './components/PhotoCropperModal';
 import LegacyNormalizationWizard from './components/LegacyNormalizationWizard';
 import AIAssessmentWizard from './components/AIAssessmentWizard';
+import MuseumPhotoReview from './components/MuseumPhotoReview';
 
 export function getGreeting(date = new Date()) {
   const hour = date.getHours();
@@ -2656,6 +2657,10 @@ export default function App() {
 
                 <button className={`sidebar-item ${currentView === 'legacy_normalize' ? 'active' : ''}`} onClick={() => { setCurrentView('legacy_normalize'); fetchNormalizationItems(); setMobileNavOpen(false); }}>
                   <Sparkles size={18} color="var(--gold-accent)" /> Legacy Data Review
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'museum_photo_review' ? 'active' : ''}`} onClick={() => { setCurrentView('museum_photo_review'); setMobileNavOpen(false); }}>
+                  <Camera size={18} color="var(--gold-accent)" /> Museum Photo Review
                 </button>
 
                 {/* Mobile & Admin Operational Controls Section */}
@@ -6455,6 +6460,21 @@ export default function App() {
                 )}
               </div>
             </div>
+          )}
+
+          {/* ADMIN MUSEUM PHOTO REVIEW STUDIO */}
+          {currentView === 'museum_photo_review' && currentUser?.role === 'admin' && (
+            <MuseumPhotoReview
+              items={items}
+              categories={categories}
+              currentUser={currentUser}
+              onUpdateItem={(updatedItem) => {
+                setItems(prev => prev.map(it => it.id === updatedItem.id ? { ...it, ...updatedItem } : it));
+                fetchItems();
+              }}
+              onEditItem={(item) => handleStartEditItem(item)}
+              onClose={handleNavigateHome}
+            />
           )}
 
           {/* ADMIN USER MANAGEMENT & PASSWORDS VIEW */}
