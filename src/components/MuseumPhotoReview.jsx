@@ -87,9 +87,15 @@ export default function MuseumPhotoReview({
 }) {
   const [filterMode, setFilterMode] = useState('needs_photo'); // 'needs_photo' | 'completed' | 'all'
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [stagedPhoto, setStagedPhoto] = useState(null); // { file?: File, dataUrl: string } | null
+  const [stagedPhoto, setStagedPhoto] = useState(null); // { file?: File, dataUrl: string, draftUrl?: string, isAiDraft?: boolean } | null
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isRevising, setIsRevising] = useState(false);
+  const [generationSeconds, setGenerationSeconds] = useState(0);
+  const [revisionInstruction, setRevisionInstruction] = useState('');
+  const [aiError, setAiError] = useState(null);
+  const [showManualUpload, setShowManualUpload] = useState(false);
   const [feedbackToast, setFeedbackToast] = useState(null); // { type: 'success' | 'error' | 'info', message: string }
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
@@ -125,9 +131,12 @@ export default function MuseumPhotoReview({
   // Active current item
   const currentItem = filteredItems[currentIndex] || null;
 
-  // Clear staged photo whenever active item changes
+  // Clear staged photo and AI revision states whenever active item changes
   useEffect(() => {
     setStagedPhoto(null);
+    setRevisionInstruction('');
+    setAiError(null);
+    setShowManualUpload(false);
   }, [currentItem?.id]);
 
   // Ensure currentIndex stays within bounds when list length changes
@@ -226,20 +235,102 @@ export default function MuseumPhotoReview({
     }
   };
 
-  // Upload/Save staged photo
+  // AI Convert to Museum Photo
+  const handleGenerateAiMuseumPhoto = async () => {
+    if (!currentItem) return;
+    const originalPhoto = currentItem.primary_photo || currentItem.photos?.[0]?.photo_url;
+    if (!originalPhoto) {
+      showToast('No original photo found for this item to convert.', 'error');
+      return;
+    }
+    setIsGenerating(true);
+    setAiError(null);
+    setGenerationSeconds(0);
+    const timer = setInterval(() => setGenerationSeconds(s => s + 1), 1000);
+    try {
+      const res = await fetch(`/api/admin/items/${currentItem.id}/museum-photo/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to generate museum photo');
+      }
+      setStagedPhoto({
+        dataUrl: data.draftUrl,
+        draftUrl: data.draftUrl,
+        isAiDraft: true
+      });
+      setRevisionInstruction('');
+      showToast('Museum photo draft generated! Review the image below.', 'success');
+    } catch (err) {
+      console.error('AI Generation error:', err);
+      setAiError(err.message || 'Failed to generate museum photo.');
+      showToast('Generation error: ' + err.message, 'error');
+    } finally {
+      clearInterval(timer);
+      setIsGenerating(false);
+    }
+  };
+
+  // AI Revise Museum Photo Draft
+  const handleReviseAiMuseumPhoto = async () => {
+    if (!currentItem || !stagedPhoto?.draftUrl || !revisionInstruction.trim()) return;
+    setIsRevising(true);
+    setAiError(null);
+    setGenerationSeconds(0);
+    const timer = setInterval(() => setGenerationSeconds(s => s + 1), 1000);
+    try {
+      const res = await fetch(`/api/admin/items/${currentItem.id}/museum-photo/revise`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instruction: revisionInstruction.trim(),
+          draftUrl: stagedPhoto.draftUrl
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to revise museum photo');
+      }
+      setStagedPhoto({
+        dataUrl: data.draftUrl,
+        draftUrl: data.draftUrl,
+        isAiDraft: true
+      });
+      setRevisionInstruction('');
+      showToast('Revision complete! Review the updated draft.', 'success');
+    } catch (err) {
+      console.error('AI Revision error:', err);
+      setAiError(err.message || 'Failed to revise museum photo.');
+      showToast('Revision error: ' + err.message, 'error');
+    } finally {
+      clearInterval(timer);
+      setIsRevising(false);
+    }
+  };
+
+  // Upload/Save/Approve staged photo
   const handleSave = async (andNext = false) => {
     if (!currentItem || !stagedPhoto) return;
     setIsSaving(true);
     try {
-      const res = await fetch(`/api/admin/items/${currentItem.id}/museum-photo`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          imageBase64: stagedPhoto.dataUrl
-        })
-      });
+      let res;
+      if (stagedPhoto.draftUrl) {
+        // Approve AI draft
+        res = await fetch(`/api/admin/items/${currentItem.id}/museum-photo/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ draftUrl: stagedPhoto.draftUrl })
+        });
+      } else {
+        // Manual upload/paste
+        res = await fetch(`/api/admin/items/${currentItem.id}/museum-photo`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageBase64: stagedPhoto.dataUrl })
+        });
+      }
 
       const data = await res.json();
       if (!res.ok) {
@@ -251,6 +342,8 @@ export default function MuseumPhotoReview({
       }
 
       setStagedPhoto(null);
+      setRevisionInstruction('');
+      setAiError(null);
 
       if (andNext) {
         // Advance to the next item that does not yet have a museum photo
@@ -308,8 +401,13 @@ export default function MuseumPhotoReview({
 
   // Discard staged photo without altering saved database photo
   const handleCancelStaging = () => {
+    if (stagedPhoto?.draftUrl) {
+      fetch(`/api/admin/items/${currentItem?.id}/museum-photo/draft`, { method: 'DELETE' }).catch(() => {});
+    }
     setStagedPhoto(null);
-    showToast('Staged changes discarded. Existing saved photo preserved.', 'info');
+    setRevisionInstruction('');
+    setAiError(null);
+    showToast('Staged preview discarded. Existing photo preserved.', 'info');
   };
 
   // Remove saved museum photo from DB
@@ -856,20 +954,86 @@ export default function MuseumPhotoReview({
             }}
           />
 
-          {/* STATE A: STAGED PHOTO PREVIEW (UNSAVED) */}
-          {stagedPhoto ? (
+          {/* STATE A: ACTIVE AI GENERATION OR REVISION IN PROGRESS */}
+          {isGenerating || isRevising ? (
+            <div style={{
+              flex: 1,
+              minHeight: '340px',
+              border: '2px solid var(--pine-primary)',
+              background: '#f8fafc',
+              borderRadius: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '2rem 1.5rem',
+              textAlign: 'center',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '50%',
+                background: '#dcfce7',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginBottom: '1rem',
+                color: 'var(--pine-primary)'
+              }}>
+                <Sparkles size={32} className="spin" />
+              </div>
+
+              <h4 style={{ fontFamily: 'var(--font-heading)', color: 'var(--pine-deep)', margin: '0 0 0.5rem', fontSize: '1.2rem', fontWeight: 700 }}>
+                {isGenerating ? 'Converting to Museum Photo...' : 'Revising Museum Photo...'}
+              </h4>
+
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '0 0 1.25rem', maxWidth: '320px', lineHeight: 1.4 }}>
+                {isGenerating
+                  ? 'OpenAI gpt-image-2.5-sunburst is isolating the artifact on a neutral seamless museum studio background...'
+                  : 'Applying your refinement instructions while referencing the original artifact...'}
+              </p>
+
+              <div style={{
+                background: '#e2e8f0',
+                borderRadius: '20px',
+                padding: '4px 14px',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                color: 'var(--pine-deep)',
+                marginBottom: '1rem'
+              }}>
+                Elapsed time: <strong>{generationSeconds}s</strong> (typically ~35–45s)
+              </div>
+
+              <div style={{ width: '100%', maxWidth: '240px', height: '6px', background: '#e2e8f0', borderRadius: '3px', overflow: 'hidden' }}>
+                <div style={{ width: '60%', height: '100%', background: 'var(--pine-primary)', borderRadius: '3px', animation: 'pulse 1.5s infinite' }} />
+              </div>
+            </div>
+          ) : stagedPhoto ? (
+            /* STATE B: STAGED PHOTO PREVIEW (UNSAVED AI DRAFT OR MANUAL UPLOAD) */
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+              {/* Error alert if previous operation failed */}
+              {aiError && (
+                <div style={{ background: '#fee2e2', border: '1px solid #f87171', borderRadius: '8px', padding: '8px 12px', marginBottom: '0.75rem', fontSize: '0.82rem', color: '#991b1b', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                  <span style={{ flex: 1 }}>{aiError}</span>
+                  <button onClick={() => setAiError(null)} style={{ background: 'none', border: 'none', color: '#991b1b', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
+                </div>
+              )}
+
               <div style={{
                 background: '#f8fafc',
                 borderRadius: '12px',
-                border: '2px dashed #f59e0b',
+                border: stagedPhoto.isAiDraft ? '2px solid var(--pine-primary)' : '2px dashed #f59e0b',
                 overflow: 'hidden',
                 aspectRatio: '4/3',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 position: 'relative',
-                marginBottom: '0.75rem'
+                marginBottom: '0.75rem',
+                boxShadow: 'var(--shadow-sm)'
               }}>
                 <img
                   src={stagedPhoto.dataUrl}
@@ -880,59 +1044,119 @@ export default function MuseumPhotoReview({
                   position: 'absolute',
                   top: '10px',
                   right: '10px',
-                  background: 'rgba(0,0,0,0.7)',
+                  background: stagedPhoto.isAiDraft ? 'rgba(22, 101, 52, 0.9)' : 'rgba(180, 83, 9, 0.9)',
                   color: '#fff',
-                  fontSize: '0.7rem',
-                  fontWeight: 600,
-                  padding: '3px 8px',
-                  borderRadius: '6px'
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  padding: '3px 9px',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
                 }}>
-                  Unsaved Preview
+                  {stagedPhoto.isAiDraft ? <Sparkles size={11} /> : null}
+                  {stagedPhoto.isAiDraft ? 'AI Draft (Unapproved)' : 'Unsaved Preview'}
                 </div>
               </div>
 
-              {/* Informational Staging Warning */}
-              <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '8px 12px', marginBottom: '1rem', fontSize: '0.8rem', color: '#92400e' }}>
-                <strong>⚠️ Staged preview:</strong> Existing photo is unchanged until you click Save. Click Cancel to discard.
+              {/* Informational Warning / Curatorial Guidance */}
+              <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '8px 12px', marginBottom: '0.75rem', fontSize: '0.78rem', color: '#92400e', lineHeight: 1.35 }}>
+                <strong>⚠️ Review visual fidelity:</strong> Existing photo is unchanged until you click Approve. As administrator, verify the AI draft accurately represents the physical artifact before approving.
               </div>
+
+              {/* AI REVISION CONTROLS (Only visible for AI drafts) */}
+              {stagedPhoto.isAiDraft && (
+                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '0.75rem', marginBottom: '0.75rem' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--pine-deep)', display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
+                    <Edit3 size={13} /> Request Refinement / Revision
+                  </label>
+                  <textarea
+                    value={revisionInstruction}
+                    onChange={(e) => setRevisionInstruction(e.target.value)}
+                    placeholder="e.g., make artifact 15% larger in frame, soften floor contact shadow, warm up lighting slightly..."
+                    style={{
+                      width: '100%',
+                      minHeight: '62px',
+                      borderRadius: '6px',
+                      border: '1px solid #cbd5e1',
+                      padding: '6px 8px',
+                      fontSize: '0.82rem',
+                      fontFamily: 'inherit',
+                      resize: 'vertical',
+                      boxSizing: 'border-box'
+                    }}
+                    disabled={isRevising || isSaving}
+                  />
+                  <button
+                    className="btn-outline"
+                    onClick={handleReviseAiMuseumPhoto}
+                    disabled={isRevising || isSaving || !revisionInstruction.trim()}
+                    style={{
+                      marginTop: '6px',
+                      width: '100%',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      fontSize: '0.82rem',
+                      fontWeight: 600,
+                      padding: '7px 12px',
+                      borderRadius: '6px'
+                    }}
+                    title="Generate updated draft using revision instructions"
+                  >
+                    {isRevising ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />}
+                    <span>Revise Draft</span>
+                  </button>
+                </div>
+              )}
 
               {/* Staged Action Buttons */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: 'auto' }}>
                 <button
                   className="btn-green"
                   onClick={() => handleSave(true)}
-                  disabled={isSaving}
+                  disabled={isSaving || isRevising}
                   style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px 16px', borderRadius: '8px', fontWeight: 600 }}
-                  title="Save museum photo and jump to next item needing one"
+                  title="Approve museum photo and jump to next item needing one"
                 >
-                  {isSaving ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
-                  <span>Save & Next</span>
+                  {isSaving ? <Loader2 size={16} className="spin" /> : <CheckCircle2 size={16} />}
+                  <span>{stagedPhoto.isAiDraft ? 'Approve & Next' : 'Save & Next'}</span>
                 </button>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
                   <button
                     className="btn-outline"
                     onClick={() => handleSave(false)}
-                    disabled={isSaving}
-                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '8px 12px', borderRadius: '8px', fontSize: '0.85rem' }}
+                    disabled={isSaving || isRevising}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '8px 12px', borderRadius: '8px', fontSize: '0.85rem', fontWeight: 600, color: 'var(--pine-deep)' }}
                   >
-                    {isSaving ? <Loader2 size={14} className="spin" /> : <Save size={14} />} Save
+                    {isSaving ? <Loader2 size={14} className="spin" /> : <Check size={14} />} {stagedPhoto.isAiDraft ? 'Approve' : 'Save'}
                   </button>
 
                   <button
                     className="btn-outline"
                     onClick={handleCancelStaging}
-                    disabled={isSaving}
+                    disabled={isSaving || isRevising}
                     style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '8px 12px', borderRadius: '8px', fontSize: '0.85rem', color: '#dc2626' }}
                   >
-                    <X size={14} /> Cancel
+                    <X size={14} /> Discard Draft
                   </button>
                 </div>
               </div>
             </div>
           ) : currentItem.museum_photo_url ? (
-            /* STATE B: EXISTING SAVED MUSEUM PHOTO */
+            /* STATE C: EXISTING APPROVED MUSEUM PHOTO */
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+              {/* Error alert if previous operation failed */}
+              {aiError && (
+                <div style={{ background: '#fee2e2', border: '1px solid #f87171', borderRadius: '8px', padding: '8px 12px', marginBottom: '0.75rem', fontSize: '0.82rem', color: '#991b1b', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                  <span style={{ flex: 1 }}>{aiError}</span>
+                  <button onClick={() => setAiError(null)} style={{ background: 'none', border: 'none', color: '#991b1b', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
+                </div>
+              )}
+
               <div style={{
                 background: '#ffffff',
                 borderRadius: '12px',
@@ -972,11 +1196,21 @@ export default function MuseumPhotoReview({
               {/* Action Buttons for Existing Museum Photo */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: 'auto' }}>
                 <button
-                  className="btn-green"
-                  onClick={() => fileInputRef.current?.click()}
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '8px 14px', borderRadius: '8px', fontSize: '0.85rem' }}
+                  className="btn-green-senior"
+                  onClick={handleGenerateAiMuseumPhoto}
+                  disabled={isGenerating}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '9px 14px', borderRadius: '8px', fontSize: '0.88rem', fontWeight: 600 }}
+                  title="Generate a new museum catalog photo draft with OpenAI"
                 >
-                  <RefreshCw size={15} /> Replace Museum Photo
+                  <Sparkles size={16} /> Re-generate with AI
+                </button>
+
+                <button
+                  className="btn-outline"
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', padding: '7px 12px', borderRadius: '8px', fontSize: '0.82rem' }}
+                >
+                  <RefreshCw size={14} /> Replace Manually (Upload/Paste)
                 </button>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
@@ -1010,58 +1244,118 @@ export default function MuseumPhotoReview({
               </div>
             </div>
           ) : (
-            /* STATE C: EMPTY DROP & PASTE ZONE */
-            <div
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
-              style={{
-                flex: 1,
-                minHeight: '260px',
-                border: `2px dashed ${isDragging ? 'var(--pine-primary)' : '#cbd5e1'}`,
-                background: isDragging ? '#f0fdf4' : '#f8fafc',
+            /* STATE D: NO MUSEUM PHOTO YET - PRIMARY AI WORKFLOW */
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
+              {/* Error alert if previous operation failed */}
+              {aiError && (
+                <div style={{ background: '#fee2e2', border: '1px solid #f87171', borderRadius: '8px', padding: '10px 12px', marginBottom: '1rem', fontSize: '0.84rem', color: '#991b1b', display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                  <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+                  <div style={{ flex: 1 }}>
+                    <strong>Generation Failed:</strong> {aiError}
+                  </div>
+                  <button onClick={() => setAiError(null)} style={{ background: 'none', border: 'none', color: '#991b1b', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
+                </div>
+              )}
+
+              {/* Primary AI Action Card */}
+              <div style={{
+                background: '#f8fafc',
+                border: '1px solid var(--border-color)',
                 borderRadius: '12px',
+                padding: '1.75rem 1.25rem',
+                textAlign: 'center',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
-                padding: '2rem 1.5rem',
-                cursor: 'pointer',
-                textAlign: 'center',
-                transition: 'all 0.2s ease',
-                position: 'relative'
-              }}
-            >
-              <div style={{
-                width: '56px',
-                height: '56px',
-                borderRadius: '50%',
-                background: isDragging ? '#dcfce7' : '#e2e8f0',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginBottom: '1rem',
-                color: isDragging ? 'var(--pine-primary)' : 'var(--text-muted)'
+                marginBottom: '1rem'
               }}>
-                <Upload size={26} />
+                <div style={{
+                  width: '56px',
+                  height: '56px',
+                  borderRadius: '50%',
+                  background: '#dcfce7',
+                  color: 'var(--pine-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginBottom: '1rem'
+                }}>
+                  <Sparkles size={28} />
+                </div>
+
+                <h4 style={{ fontFamily: 'var(--font-heading)', color: 'var(--pine-deep)', margin: '0 0 0.5rem', fontSize: '1.15rem', fontWeight: 700 }}>
+                  Create Museum Catalog Photo
+                </h4>
+
+                <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', margin: '0 0 1.25rem', maxWidth: '300px', lineHeight: 1.45 }}>
+                  Automatically isolates the artifact, removes household clutter, and presents it on a seamless light-gray studio background using OpenAI.
+                </p>
+
+                <button
+                  className="btn-green-senior"
+                  onClick={handleGenerateAiMuseumPhoto}
+                  disabled={isGenerating}
+                  style={{
+                    width: '100%',
+                    maxWidth: '280px',
+                    minHeight: '48px',
+                    fontSize: '0.95rem',
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    borderRadius: '10px'
+                  }}
+                >
+                  <Sparkles size={18} /> Convert to Museum Photo
+                </button>
               </div>
 
-              <h4 style={{ fontFamily: 'var(--font-heading)', color: 'var(--pine-deep)', margin: '0 0 0.5rem', fontSize: '1.05rem' }}>
-                Paste, Drop, or Upload Museum Photo
-              </h4>
+              {/* Secondary Manual Upload Toggle */}
+              <div style={{ marginTop: 'auto' }}>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  onClick={() => setShowManualUpload(!showManualUpload)}
+                  style={{ width: '100%', fontSize: '0.8rem', padding: '7px 12px', borderRadius: '8px', color: 'var(--text-muted)' }}
+                >
+                  {showManualUpload ? '▲ Hide Manual Upload' : '▼ Or Upload / Paste Manually'}
+                </button>
 
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '0 0 1rem', maxWidth: '260px' }}>
-                Press <kbd style={{ background: '#e2e8f0', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>Ctrl+V</kbd> anywhere, or drag an isolated photo file here
-              </p>
-
-              <button
-                className="btn-outline"
-                type="button"
-                style={{ fontSize: '0.8rem', padding: '6px 14px', borderRadius: '6px', pointerEvents: 'none' }}
-              >
-                Browse Files...
-              </button>
+                {showManualUpload && (
+                  <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{
+                      marginTop: '0.75rem',
+                      minHeight: '140px',
+                      border: `2px dashed ${isDragging ? 'var(--pine-primary)' : '#cbd5e1'}`,
+                      background: isDragging ? '#f0fdf4' : '#ffffff',
+                      borderRadius: '10px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '1rem',
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    <Upload size={22} style={{ color: 'var(--text-muted)', marginBottom: '6px' }} />
+                    <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--pine-deep)' }}>
+                      Drop image or click to browse
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      (Ctrl+V also supported)
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

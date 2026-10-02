@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url';
 import { extractLegacyData } from './services/legacyNormalization.js';
 import { generateAIAssessment } from './services/aiAssessment.js';
 import { assessItem } from './services/itemAssessmentEngine.js';
+import { generateMuseumPhoto, reviseMuseumPhoto } from './services/imageEditService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,9 +38,10 @@ const FULL_UPLOADS_DIR = path.join(UPLOADS_DIR, 'full');
 const THUMB_UPLOADS_DIR = path.join(UPLOADS_DIR, 'thumbs');
 const MUSEUM_UPLOADS_DIR = path.join(UPLOADS_DIR, 'museum');
 const MUSEUM_THUMB_UPLOADS_DIR = path.join(UPLOADS_DIR, 'museum', 'thumbs');
+const MUSEUM_DRAFTS_DIR = path.join(UPLOADS_DIR, 'museum', 'drafts');
 const BACKUPS_DIR = path.join(STORAGE_ROOT, 'backups');
 
-[DATA_DIR, UPLOADS_DIR, FULL_UPLOADS_DIR, THUMB_UPLOADS_DIR, MUSEUM_UPLOADS_DIR, MUSEUM_THUMB_UPLOADS_DIR, BACKUPS_DIR].forEach(dir => {
+[DATA_DIR, UPLOADS_DIR, FULL_UPLOADS_DIR, THUMB_UPLOADS_DIR, MUSEUM_UPLOADS_DIR, MUSEUM_THUMB_UPLOADS_DIR, MUSEUM_DRAFTS_DIR, BACKUPS_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -1658,7 +1660,7 @@ app.post('/api/admin/items/:id/museum-photo', authenticateToken, requireRole(['a
       .toFile(fullPath);
 
     await sharp(imageBuffer)
-      .resize(400, 400, { fit: 'cover' })
+      .resize(400, 400, { fit: 'inside', withoutEnlargement: true })
       .toFormat('webp', { quality: 80 })
       .toFile(thumbPath);
 
@@ -1738,6 +1740,255 @@ app.delete('/api/admin/items/:id/museum-photo', authenticateToken, requireRole([
   } catch (err) {
     console.error("Failed to delete museum photo:", err);
     res.status(500).json({ error: "Failed to delete museum photo" });
+  }
+});
+
+// ----------------------------------------------------
+// MUSEUM PHOTO AI GENERATION, REVISION & APPROVAL
+// ----------------------------------------------------
+
+// Helper: Safely delete drafts for an item (optionally keeping one new draft)
+function deleteItemDrafts(itemId, exceptFilename = null) {
+  try {
+    if (!fs.existsSync(MUSEUM_DRAFTS_DIR)) return;
+    const files = fs.readdirSync(MUSEUM_DRAFTS_DIR);
+    for (const f of files) {
+      if (f.startsWith(`draft-${itemId}-`) && f !== exceptFilename) {
+        try {
+          fs.unlinkSync(path.join(MUSEUM_DRAFTS_DIR, f));
+        } catch (e) {
+          console.warn(`[Draft Cleanup] Warning removing ${f}:`, e.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[Draft Cleanup] Error cleaning drafts for item ${itemId}:`, err.message);
+  }
+}
+
+// Helper: Validate and resolve a draft URL to an absolute disk path
+function resolveValidatedDraftPath(itemId, draftUrl) {
+  if (!draftUrl || typeof draftUrl !== 'string') return null;
+  const filename = path.basename(draftUrl);
+  // Ensure strict naming pattern belonging to this item to prevent path traversal
+  if (!filename.startsWith(`draft-${itemId}-`) || !filename.endsWith('.png')) {
+    return null;
+  }
+  const resolved = path.join(MUSEUM_DRAFTS_DIR, filename);
+  if (!resolved.startsWith(MUSEUM_DRAFTS_DIR)) return null;
+  if (!fs.existsSync(resolved)) return null;
+  return resolved;
+}
+
+// Endpoint: AI Convert to Museum Photo (Initial Draft)
+app.post('/api/admin/items/:id/museum-photo/generate', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const estateId = req.user.estate_id;
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    // Locate original primary photo record from database
+    const photoRecord = await dbGet(
+      `SELECT photo_url FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC LIMIT 1`,
+      [itemId]
+    );
+    if (!photoRecord || !photoRecord.photo_url) {
+      return res.status(400).json({ error: "Item has no original photograph to convert." });
+    }
+
+    const relPath = photoRecord.photo_url.replace(/^\/uploads\//, '');
+    const originalFilePath = path.join(UPLOADS_DIR, relPath);
+    if (!fs.existsSync(originalFilePath)) {
+      return res.status(404).json({ error: "Original photograph file not found on server storage." });
+    }
+
+    // Call reusable OpenAI service (model: gpt-image-2.5-sunburst, quality: high)
+    const result = await generateMuseumPhoto({ originalImagePath: originalFilePath });
+
+    // Save temporary draft image
+    if (!fs.existsSync(MUSEUM_DRAFTS_DIR)) fs.mkdirSync(MUSEUM_DRAFTS_DIR, { recursive: true });
+    const draftFilename = `draft-${itemId}-${Date.now()}.png`;
+    const draftPath = path.join(MUSEUM_DRAFTS_DIR, draftFilename);
+    fs.writeFileSync(draftPath, result.imageBuffer);
+
+    // Keep only the current AI draft for this item
+    deleteItemDrafts(itemId, draftFilename);
+
+    logAudit(estateId, req.user.id, 'GENERATE_MUSEUM_PHOTO_DRAFT', 'items', itemId, {
+      draftFilename,
+      usage: result.usage
+    });
+
+    res.json({
+      success: true,
+      draftUrl: `/uploads/museum/drafts/${draftFilename}`,
+      usage: result.usage
+    });
+  } catch (err) {
+    console.error("Museum photo generation error:", err);
+    res.status(500).json({ error: err.message || "Failed to generate museum photo." });
+  }
+});
+
+// Endpoint: AI Revise Museum Photo Draft (Dual-Image Anchor)
+app.post('/api/admin/items/:id/museum-photo/revise', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const estateId = req.user.estate_id;
+    const { instruction, draftUrl } = req.body;
+
+    if (!instruction || typeof instruction !== 'string' || instruction.trim() === '') {
+      return res.status(400).json({ error: "Revision instructions are required." });
+    }
+
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    // Validate that current draft belongs to this item and exists in drafts directory
+    const currentDraftPath = resolveValidatedDraftPath(itemId, draftUrl);
+    if (!currentDraftPath) {
+      return res.status(400).json({ error: "Active museum photo draft is invalid or has expired." });
+    }
+
+    // Locate original primary photo record from database as immutable source of truth
+    const photoRecord = await dbGet(
+      `SELECT photo_url FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC LIMIT 1`,
+      [itemId]
+    );
+    if (!photoRecord || !photoRecord.photo_url) {
+      return res.status(400).json({ error: "Original artifact photograph is missing." });
+    }
+
+    const relPath = photoRecord.photo_url.replace(/^\/uploads\//, '');
+    const originalFilePath = path.join(UPLOADS_DIR, relPath);
+    if (!fs.existsSync(originalFilePath)) {
+      return res.status(404).json({ error: "Original photograph file not found on server storage." });
+    }
+
+    // Call reusable service with both original and current draft
+    const result = await reviseMuseumPhoto({
+      originalImagePath: originalFilePath,
+      currentDraftPath: currentDraftPath,
+      instruction: instruction.trim()
+    });
+
+    // Save new draft
+    const newDraftFilename = `draft-${itemId}-${Date.now()}.png`;
+    const newDraftPath = path.join(MUSEUM_DRAFTS_DIR, newDraftFilename);
+    fs.writeFileSync(newDraftPath, result.imageBuffer);
+
+    // Delete superseded draft now that new revision succeeded
+    deleteItemDrafts(itemId, newDraftFilename);
+
+    logAudit(estateId, req.user.id, 'REVISE_MUSEUM_PHOTO_DRAFT', 'items', itemId, {
+      instruction: instruction.trim(),
+      newDraftFilename,
+      usage: result.usage
+    });
+
+    res.json({
+      success: true,
+      draftUrl: `/uploads/museum/drafts/${newDraftFilename}`,
+      usage: result.usage
+    });
+  } catch (err) {
+    console.error("Museum photo revision error:", err);
+    res.status(500).json({ error: err.message || "Failed to revise museum photo." });
+  }
+});
+
+// Endpoint: Approve Museum Photo Draft
+app.post('/api/admin/items/:id/museum-photo/approve', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const estateId = req.user.estate_id;
+    const { draftUrl } = req.body;
+
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const draftPath = resolveValidatedDraftPath(itemId, draftUrl);
+    if (!draftPath) {
+      return res.status(400).json({ error: "Draft image not found or invalid." });
+    }
+
+    if (!fs.existsSync(MUSEUM_UPLOADS_DIR)) fs.mkdirSync(MUSEUM_UPLOADS_DIR, { recursive: true });
+    if (!fs.existsSync(MUSEUM_THUMB_UPLOADS_DIR)) fs.mkdirSync(MUSEUM_THUMB_UPLOADS_DIR, { recursive: true });
+
+    const fileBase = `museum-${itemId}-${Date.now()}`;
+    const fullFilename = `${fileBase}.webp`;
+    const thumbFilename = `thumb-${fileBase}.webp`;
+
+    const fullPath = path.join(MUSEUM_UPLOADS_DIR, fullFilename);
+    const thumbPath = path.join(MUSEUM_THUMB_UPLOADS_DIR, thumbFilename);
+
+    const draftBuffer = fs.readFileSync(draftPath);
+
+    // Generate high quality WebP and thumbnail via Sharp
+    await sharp(draftBuffer)
+      .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
+      .toFormat('webp', { quality: 90 })
+      .toFile(fullPath);
+
+    await sharp(draftBuffer)
+      .resize(400, 400, { fit: 'inside', withoutEnlargement: true })
+      .toFormat('webp', { quality: 80 })
+      .toFile(thumbPath);
+
+    const museumPhotoUrl = `/uploads/museum/${fullFilename}`;
+    const museumPhotoThumbUrl = `/uploads/museum/thumbs/${thumbFilename}`;
+
+    // Update database record
+    await dbRun(`
+      UPDATE items SET
+        museum_photo_url = ?,
+        museum_photo_thumb_url = ?,
+        museum_photo_updated_at = CURRENT_TIMESTAMP,
+        museum_photo_updated_by_user_id = ?,
+        museum_photo_updated_by_user_name = ?
+      WHERE id = ? AND estate_id = ?
+    `, [
+      museumPhotoUrl,
+      museumPhotoThumbUrl,
+      req.user.id,
+      req.user.name,
+      itemId,
+      estateId
+    ]);
+
+    // Delete draft ONLY AFTER successful write and DB update
+    deleteItemDrafts(itemId);
+
+    const updatedItem = await dbGet(`
+      SELECT i.*, c.name as category_name, c.icon as category_icon,
+             (SELECT photo_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_photo,
+             (SELECT thumbnail_url FROM item_photos WHERE item_id = i.id ORDER BY is_primary DESC, display_order ASC LIMIT 1) as primary_thumb
+      FROM items i
+      LEFT JOIN categories c ON i.category_id = c.id
+      WHERE i.id = ? AND i.estate_id = ?
+    `, [itemId, estateId]);
+
+    logAudit(estateId, req.user.id, 'APPROVE_MUSEUM_PHOTO', 'items', itemId, {
+      museumPhotoUrl,
+      previousUrl: item.museum_photo_url || null
+    });
+
+    res.json({ success: true, item: updatedItem });
+  } catch (err) {
+    console.error("Museum photo approval error:", err);
+    res.status(500).json({ error: err.message || "Failed to approve museum photo." });
+  }
+});
+
+// Endpoint: Discard / Cancel Draft
+app.delete('/api/admin/items/:id/museum-photo/draft', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    deleteItemDrafts(itemId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to discard draft." });
   }
 });
 
