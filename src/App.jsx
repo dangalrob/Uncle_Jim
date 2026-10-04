@@ -6,7 +6,7 @@ import {
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
   Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff,
   Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign, Crop,
-  LogOut, Activity, MessageSquare, MessageCircle, Key, Database, Download, ShieldCheck
+  LogOut, Activity, MessageSquare, MessageCircle, Key, Database, Download, ShieldCheck, Images
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import { thumbnailCache } from './services/thumbnailCache';
