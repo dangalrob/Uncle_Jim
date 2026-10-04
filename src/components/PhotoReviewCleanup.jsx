@@ -15,6 +15,7 @@ import CachedThumbnail from './CachedThumbnail';
  * - Rows 2+: Additional Original #N vs Additional Museum #N (with Create/Revise Museum workflow)
  * - Focused filter: "Needs Additional Museum Photo"
  * - Original photographs preserved by default; deletion is secondary and protected by confirmation.
+ * @version 1.3.1
  */
 export default function PhotoReviewCleanup({
   currentUser,
