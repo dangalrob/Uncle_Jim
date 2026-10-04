@@ -58,6 +58,56 @@ export function renderUserSelectOptions(item, userList = []) {
 }
 
 /**
+ * Display label mapping for destination values
+ */
+export const DEST_DISPLAY_MAP = {
+  undecided: 'Undecided',
+  family: 'Family',
+  institution: 'Institution',
+  estate_sale: 'Estate Sale',
+  friend: 'Friend',
+  charity: 'Charity'
+};
+
+/**
+ * Parse an estimated value string into a numeric dollar value for sorting.
+ * Handles single amounts ($50, < $50, > $100, 400, $1,200),
+ * ranges (45-80, $50-$100, 30 to 50 -> midpoint),
+ * and maps blank/NA/unparseable values to null (grouped at end).
+ */
+export function parseEstimatedValue(raw) {
+  if (raw === null || raw === undefined) return null;
+  const str = String(raw).trim().toLowerCase();
+  if (!str || str === 'na' || str === 'n/a' || str === 'none' || str === '-' || str === 'blank' || str === 'tbd') {
+    return null;
+  }
+
+  // Remove commas and dollar signs, but preserve hyphens, decimals, digits, and words like 'to'
+  const sanitized = str.replace(/[$,]/g, '').trim();
+
+  // Check for range with separator: '-' or '–' or '—' or 'to'
+  const rangeMatch = sanitized.match(/^<?\s*(\d+(?:\.\d+)?)\s*(?:-|–|—|\bto\b)\s*>?\s*(\d+(?:\.\d+)?)/i);
+  if (rangeMatch) {
+    const low = parseFloat(rangeMatch[1]);
+    const high = parseFloat(rangeMatch[2]);
+    if (!isNaN(low) && !isNaN(high)) {
+      return (low + high) / 2;
+    }
+  }
+
+  // Check for single number (e.g. "< 50", "> 100", "50", "400")
+  const singleMatch = sanitized.match(/(\d+(?:\.\d+)?)/);
+  if (singleMatch) {
+    const num = parseFloat(singleMatch[1]);
+    if (!isNaN(num)) {
+      return num;
+    }
+  }
+
+  return null;
+}
+
+/**
  * AdminReviewMode Component
  * Redesigned compact laptop inventory cleanup workspace with inline table editing,
  * live autosave, and contextual drill-down modal (Previous, Save, Save & Next, Next).
@@ -84,8 +134,33 @@ export default function AdminReviewMode({
   const [searchQuery, setSearchQuery] = useState('');
   const [quickFilter, setQuickFilter] = useState('all'); // 'all' | 'missing_cat' | 'missing_val' | 'missing_title' | 'institutional' | 'not_released' | 'upload_pending'
   const [destinationFilter, setDestinationFilter] = useState('all'); // 'all' | 'undecided' | 'family' | 'institution' | 'estate_sale' | 'friend' | 'charity'
-  const [sortField, setSortField] = useState('title'); // 'title' | 'category' | 'value' | 'destination' | 'status' | 'upload'
-  const [sortAsc, setSortAsc] = useState(true);
+  const [sortField, setSortField] = useState(() => {
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        return window.sessionStorage.getItem('admin_review_sort_field') || 'title';
+      }
+    } catch (e) {}
+    return 'title';
+  });
+  const [sortAsc, setSortAsc] = useState(() => {
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        const stored = window.sessionStorage.getItem('admin_review_sort_asc');
+        if (stored !== null) return stored === 'true';
+      }
+    } catch (e) {}
+    return true;
+  });
+
+  // Sync sort state to sessionStorage
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.setItem('admin_review_sort_field', sortField);
+        window.sessionStorage.setItem('admin_review_sort_asc', String(sortAsc));
+      }
+    } catch (e) {}
+  }, [sortField, sortAsc]);
 
   // Row inline autosave state: { [itemId]: { status: 'saving'|'saved'|'error', errorMsg: '' } }
   const [rowSaveStates, setRowSaveStates] = useState({});
@@ -203,39 +278,127 @@ export default function AdminReviewMode({
 
     // Sorting
     list.sort((a, b) => {
-      let valA = '';
-      let valB = '';
-
-      if (sortField === 'title') {
-        valA = (a.title || '').toLowerCase();
-        valB = (b.title || '').toLowerCase();
-      } else if (sortField === 'category') {
-        valA = (a.category_name || categories.find(c => c.id === a.category_id)?.name || '').toLowerCase();
-        valB = (b.category_name || categories.find(c => c.id === b.category_id)?.name || '').toLowerCase();
-      } else if (sortField === 'value') {
-        valA = (a.value || '').replace(/[^0-9.]/g, '');
-        valB = (b.value || '').replace(/[^0-9.]/g, '');
-        const numA = parseFloat(valA) || 0;
-        const numB = parseFloat(valB) || 0;
-        return sortAsc ? numA - numB : numB - numA;
-      } else if (sortField === 'destination') {
-        valA = (a.destination || 'undecided').toLowerCase();
-        valB = (b.destination || 'undecided').toLowerCase();
-      } else if (sortField === 'status') {
-        valA = a.status === 'released' ? 'released' : 'draft';
-        valB = b.status === 'released' ? 'released' : 'draft';
-      } else if (sortField === 'upload') {
-        valA = a.is_offline || a.sync_status === 'pending' ? 'pending' : 'uploaded';
-        valB = b.is_offline || b.sync_status === 'pending' ? 'pending' : 'uploaded';
+      if (sortField === 'photo') {
+        const hasPhotoA = Boolean(a.primary_photo || a.primary_thumb || (a.photos && a.photos.length > 0)) ? 1 : 0;
+        const hasPhotoB = Boolean(b.primary_photo || b.primary_thumb || (b.photos && b.photos.length > 0)) ? 1 : 0;
+        if (hasPhotoA !== hasPhotoB) {
+          return sortAsc ? hasPhotoB - hasPhotoA : hasPhotoA - hasPhotoB;
+        }
+        return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
       }
 
-      if (valA < valB) return sortAsc ? -1 : 1;
-      if (valA > valB) return sortAsc ? 1 : -1;
+      if (sortField === 'title') {
+        const titleA = (a.title || '').trim();
+        const titleB = (b.title || '').trim();
+        if (!titleA && !titleB) return 0;
+        if (!titleA) return 1;
+        if (!titleB) return -1;
+        const cmp = titleA.localeCompare(titleB, undefined, { sensitivity: 'base' });
+        if (cmp !== 0) return sortAsc ? cmp : -cmp;
+        return 0;
+      }
+
+      if (sortField === 'category') {
+        const getCatName = (item) => {
+          if (item.category_id) {
+            const match = categories.find(c => c.id === item.category_id);
+            if (match?.name) return match.name;
+          }
+          return item.category_name || '';
+        };
+        const catA = getCatName(a).trim();
+        const catB = getCatName(b).trim();
+        if (!catA && !catB) return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+        if (!catA) return 1;
+        if (!catB) return -1;
+        const cmp = catA.localeCompare(catB, undefined, { sensitivity: 'base' });
+        if (cmp !== 0) return sortAsc ? cmp : -cmp;
+        return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+      }
+
+      if (sortField === 'value') {
+        const valA = parseEstimatedValue(a.value);
+        const valB = parseEstimatedValue(b.value);
+        if (valA === null && valB === null) return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+        if (valA === null) return 1;
+        if (valB === null) return -1;
+        if (valA !== valB) {
+          return sortAsc ? valA - valB : valB - valA;
+        }
+        return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+      }
+
+      if (sortField === 'destination') {
+        const getDestDisplay = (item) => {
+          const d = (item.destination || 'undecided').toLowerCase();
+          return DEST_DISPLAY_MAP[d] || d;
+        };
+        const destA = getDestDisplay(a);
+        const destB = getDestDisplay(b);
+        const cmp = destA.localeCompare(destB, undefined, { sensitivity: 'base' });
+        if (cmp !== 0) return sortAsc ? cmp : -cmp;
+        return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+      }
+
+      if (sortField === 'institutional') {
+        const getInstDisplay = (item) => {
+          const cand = item.institutional_candidate || item.institutionalCandidate || '';
+          const name = item.institutional_name || '';
+          if (cand && name) return `${cand} - ${name}`;
+          return cand || name || '';
+        };
+        const instA = getInstDisplay(a).trim();
+        const instB = getInstDisplay(b).trim();
+        if (!instA && !instB) return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+        if (!instA) return 1;
+        if (!instB) return -1;
+        const cmp = instA.localeCompare(instB, undefined, { sensitivity: 'base' });
+        if (cmp !== 0) return sortAsc ? cmp : -cmp;
+        return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+      }
+
+      if (sortField === 'assigned_to') {
+        const getAssignedName = (item) => {
+          if (item.destination_type === 'tbd' || item.assigned_to_name === 'TBD' || item.assigned_to_user_id === 'tbd') {
+            return 'TBD';
+          }
+          if (item.assigned_to_user_id) {
+            const u = activeUsersList.find(user => user.id === item.assigned_to_user_id);
+            if (u?.name) return u.name;
+          }
+          return item.assigned_to_name || '';
+        };
+        const nameA = getAssignedName(a).trim();
+        const nameB = getAssignedName(b).trim();
+        if (!nameA && !nameB) return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+        if (!nameA) return 1;
+        if (!nameB) return -1;
+        const cmp = nameA.localeCompare(nameB, undefined, { sensitivity: 'base' });
+        if (cmp !== 0) return sortAsc ? cmp : -cmp;
+        return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+      }
+
+      if (sortField === 'status') {
+        const statusA = a.status === 'released' ? 'Released' : 'Draft';
+        const statusB = b.status === 'released' ? 'Released' : 'Draft';
+        const cmp = statusA.localeCompare(statusB, undefined, { sensitivity: 'base' });
+        if (cmp !== 0) return sortAsc ? cmp : -cmp;
+        return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+      }
+
+      if (sortField === 'upload') {
+        const syncA = a.is_offline || a.sync_status === 'pending' ? 'Pending' : 'Synced';
+        const syncB = b.is_offline || b.sync_status === 'pending' ? 'Pending' : 'Synced';
+        const cmp = syncA.localeCompare(syncB, undefined, { sensitivity: 'base' });
+        if (cmp !== 0) return sortAsc ? cmp : -cmp;
+        return (a.title || '').trim().localeCompare((b.title || '').trim(), undefined, { sensitivity: 'base' });
+      }
+
       return 0;
     });
 
     return list;
-  }, [items, searchQuery, quickFilter, destinationFilter, sortField, sortAsc, categories]);
+  }, [items, searchQuery, quickFilter, destinationFilter, sortField, sortAsc, categories, activeUsersList]);
 
   // Current drill-down item
   const currentDrillDownItem = useMemo(() => {
@@ -511,25 +674,31 @@ export default function AdminReviewMode({
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.86rem', textAlign: 'left', minWidth: '880px' }}>
           <thead style={{ position: 'sticky', top: 0, background: '#f3f4f6', zIndex: 10, borderBottom: '2px solid #e5e7eb' }}>
             <tr>
-              <th style={{ padding: '8px 10px', width: '56px', textAlign: 'center' }}>Photo</th>
-              <th style={{ padding: '8px 12px', cursor: 'pointer', minWidth: '200px' }} onClick={() => handleSort('title')}>
+              <th style={{ padding: '8px 10px', width: '56px', textAlign: 'center', cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('photo')} title="Sort by Photo">
+                Photo {sortField === 'photo' && (sortAsc ? '▲' : '▼')}
+              </th>
+              <th style={{ padding: '8px 12px', cursor: 'pointer', minWidth: '200px', userSelect: 'none' }} onClick={() => handleSort('title')} title="Sort by Title">
                 Title {sortField === 'title' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 10px', cursor: 'pointer', minWidth: '170px' }} onClick={() => handleSort('category')}>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', minWidth: '170px', userSelect: 'none' }} onClick={() => handleSort('category')} title="Sort by Category">
                 Category {sortField === 'category' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '130px' }} onClick={() => handleSort('value')}>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '130px', userSelect: 'none' }} onClick={() => handleSort('value')} title="Sort by Estimated Value">
                 Estimated Value {sortField === 'value' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '135px' }} onClick={() => handleSort('destination')}>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '135px', userSelect: 'none' }} onClick={() => handleSort('destination')} title="Sort by Destination">
                 Destination {sortField === 'destination' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 10px', width: '130px' }}>Institutional</th>
-              <th style={{ padding: '8px 10px', minWidth: '155px' }}>Assigned To</th>
-              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '150px' }} onClick={() => handleSort('status')}>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '130px', userSelect: 'none' }} onClick={() => handleSort('institutional')} title="Sort by Institutional Candidate">
+                Institutional {sortField === 'institutional' && (sortAsc ? '▲' : '▼')}
+              </th>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', minWidth: '155px', userSelect: 'none' }} onClick={() => handleSort('assigned_to')} title="Sort by Assigned To">
+                Assigned To {sortField === 'assigned_to' && (sortAsc ? '▲' : '▼')}
+              </th>
+              <th style={{ padding: '8px 10px', cursor: 'pointer', width: '150px', userSelect: 'none' }} onClick={() => handleSort('status')} title="Sort by Family Review Status">
                 Family Review {sortField === 'status' && (sortAsc ? '▲' : '▼')}
               </th>
-              <th style={{ padding: '8px 8px', cursor: 'pointer', width: '65px', textAlign: 'center' }} onClick={() => handleSort('upload')} title="Sync / Upload status">
+              <th style={{ padding: '8px 8px', cursor: 'pointer', width: '65px', textAlign: 'center', userSelect: 'none' }} onClick={() => handleSort('upload')} title="Sync / Upload status">
                 Sync {sortField === 'upload' && (sortAsc ? '▲' : '▼')}
               </th>
               <th style={{ padding: '8px 12px', width: '125px', textAlign: 'right' }}>Actions</th>
