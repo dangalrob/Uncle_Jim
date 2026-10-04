@@ -254,9 +254,14 @@ async function initDatabase() {
     db.run(`ALTER TABLE item_stories ADD COLUMN is_curated_for_museum INTEGER DEFAULT 0`, () => {});
     db.run(`ALTER TABLE item_stories ADD COLUMN curator_notes TEXT`, () => {});
 
-    // 4. Item Photos Additions (Museum Presentation Flags)
+    // 4. Item Photos Additions (Museum Presentation Flags & Additional Museum Photos)
     db.run(`ALTER TABLE item_photos ADD COLUMN is_featured_for_museum INTEGER DEFAULT 0`, () => {});
     db.run(`ALTER TABLE item_photos ADD COLUMN curator_caption TEXT`, () => {});
+    db.run(`ALTER TABLE item_photos ADD COLUMN museum_photo_url TEXT`, () => {});
+    db.run(`ALTER TABLE item_photos ADD COLUMN museum_photo_thumb_url TEXT`, () => {});
+    db.run(`ALTER TABLE item_photos ADD COLUMN museum_photo_updated_at DATETIME`, () => {});
+    db.run(`ALTER TABLE item_photos ADD COLUMN museum_photo_updated_by_user_id TEXT`, () => {});
+    db.run(`ALTER TABLE item_photos ADD COLUMN museum_photo_updated_by_user_name TEXT`, () => {});
 
     // 5. New Table: Immutable Legacy Snapshots
     db.run(`CREATE TABLE IF NOT EXISTS item_legacy_snapshots (
@@ -1996,6 +2001,318 @@ app.delete('/api/admin/items/:id/museum-photo/draft', authenticateToken, require
 });
 
 // ----------------------------------------------------
+// ADDITIONAL ORIGINAL PHOTOS: MUSEUM CONVERSION WORKFLOW
+// ----------------------------------------------------
+
+// Helper: Safely delete drafts for an individual photo record
+function deletePhotoDrafts(itemId, photoId, exceptFilename = null) {
+  try {
+    if (!fs.existsSync(MUSEUM_DRAFTS_DIR)) return;
+    const files = fs.readdirSync(MUSEUM_DRAFTS_DIR);
+    const prefix = `draft-${itemId}-${photoId}-`;
+    for (const f of files) {
+      if (f.startsWith(prefix) && f !== exceptFilename) {
+        try {
+          fs.unlinkSync(path.join(MUSEUM_DRAFTS_DIR, f));
+        } catch (e) {
+          console.warn(`[Photo Draft Cleanup] Warning removing ${f}:`, e.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`[Photo Draft Cleanup] Error cleaning drafts for photo ${photoId}:`, err.message);
+  }
+}
+
+// Helper: Validate and resolve a photo draft URL to an absolute disk path
+function resolveValidatedPhotoDraftPath(itemId, photoId, draftUrl) {
+  if (!draftUrl || typeof draftUrl !== 'string') return null;
+  const filename = path.basename(draftUrl);
+  const prefix = `draft-${itemId}-${photoId}-`;
+  if (!filename.startsWith(prefix) || !filename.endsWith('.png')) {
+    return null;
+  }
+  const resolved = path.join(MUSEUM_DRAFTS_DIR, filename);
+  if (!resolved.startsWith(MUSEUM_DRAFTS_DIR)) return null;
+  if (!fs.existsSync(resolved)) return null;
+  return resolved;
+}
+
+// Endpoint: AI Convert Additional Original Photo to Museum Version (Initial Draft)
+app.post('/api/admin/items/:id/photos/:photoId/museum-photo/generate', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id: itemId, photoId } = req.params;
+    const estateId = req.user.estate_id;
+
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const photoRecord = await dbGet(`SELECT * FROM item_photos WHERE id = ? AND item_id = ?`, [photoId, itemId]);
+    if (!photoRecord || !photoRecord.photo_url) {
+      return res.status(404).json({ error: "Specified original photograph not found." });
+    }
+
+    const relPath = photoRecord.photo_url.replace(/^\/uploads\//, '');
+    const originalFilePath = path.join(UPLOADS_DIR, relPath);
+    if (!fs.existsSync(originalFilePath)) {
+      return res.status(404).json({ error: "Original photograph file not found on server storage." });
+    }
+
+    // Call reusable OpenAI service (model: gpt-image-2.5-sunburst, quality: high)
+    const result = await generateMuseumPhoto({ originalImagePath: originalFilePath });
+
+    // Save temporary draft image
+    if (!fs.existsSync(MUSEUM_DRAFTS_DIR)) fs.mkdirSync(MUSEUM_DRAFTS_DIR, { recursive: true });
+    const draftFilename = `draft-${itemId}-${photoId}-${Date.now()}.png`;
+    const draftPath = path.join(MUSEUM_DRAFTS_DIR, draftFilename);
+    fs.writeFileSync(draftPath, result.imageBuffer);
+
+    // Keep only the current AI draft for this specific photo
+    deletePhotoDrafts(itemId, photoId, draftFilename);
+
+    logAudit(estateId, req.user.id, 'GENERATE_ADDITIONAL_MUSEUM_PHOTO_DRAFT', 'item_photos', photoId, {
+      itemId,
+      photoId,
+      draftFilename,
+      usage: result.usage
+    });
+
+    res.json({
+      success: true,
+      draftUrl: `/uploads/museum/drafts/${draftFilename}`,
+      usage: result.usage
+    });
+  } catch (err) {
+    console.error("Additional museum photo generation error:", err);
+    res.status(500).json({ error: err.message || "Failed to generate museum photo for this photograph." });
+  }
+});
+
+// Endpoint: AI Revise Additional Original Photo Museum Draft (Dual-Image Anchor)
+app.post('/api/admin/items/:id/photos/:photoId/museum-photo/revise', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id: itemId, photoId } = req.params;
+    const estateId = req.user.estate_id;
+    const { instruction, draftUrl } = req.body;
+
+    if (!instruction || typeof instruction !== 'string' || instruction.trim() === '') {
+      return res.status(400).json({ error: "Revision instructions are required." });
+    }
+
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const photoRecord = await dbGet(`SELECT * FROM item_photos WHERE id = ? AND item_id = ?`, [photoId, itemId]);
+    if (!photoRecord || !photoRecord.photo_url) {
+      return res.status(404).json({ error: "Specified original photograph not found." });
+    }
+
+    const currentDraftPath = resolveValidatedPhotoDraftPath(itemId, photoId, draftUrl);
+    if (!currentDraftPath) {
+      return res.status(400).json({ error: "Active photo draft is invalid or has expired." });
+    }
+
+    const relPath = photoRecord.photo_url.replace(/^\/uploads\//, '');
+    const originalFilePath = path.join(UPLOADS_DIR, relPath);
+    if (!fs.existsSync(originalFilePath)) {
+      return res.status(404).json({ error: "Original photograph file not found on server storage." });
+    }
+
+    const result = await reviseMuseumPhoto({
+      originalImagePath: originalFilePath,
+      currentDraftPath: currentDraftPath,
+      instruction: instruction.trim()
+    });
+
+    const newDraftFilename = `draft-${itemId}-${photoId}-${Date.now()}.png`;
+    const newDraftPath = path.join(MUSEUM_DRAFTS_DIR, newDraftFilename);
+    fs.writeFileSync(newDraftPath, result.imageBuffer);
+
+    deletePhotoDrafts(itemId, photoId, newDraftFilename);
+
+    logAudit(estateId, req.user.id, 'REVISE_ADDITIONAL_MUSEUM_PHOTO_DRAFT', 'item_photos', photoId, {
+      itemId,
+      photoId,
+      instruction: instruction.trim(),
+      newDraftFilename,
+      usage: result.usage
+    });
+
+    res.json({
+      success: true,
+      draftUrl: `/uploads/museum/drafts/${newDraftFilename}`,
+      usage: result.usage
+    });
+  } catch (err) {
+    console.error("Additional museum photo revision error:", err);
+    res.status(500).json({ error: err.message || "Failed to revise museum photo." });
+  }
+});
+
+// Endpoint: Approve Additional Museum Photo Draft
+app.post('/api/admin/items/:id/photos/:photoId/museum-photo/approve', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id: itemId, photoId } = req.params;
+    const estateId = req.user.estate_id;
+    const { draftUrl } = req.body;
+
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const photoRecord = await dbGet(`SELECT * FROM item_photos WHERE id = ? AND item_id = ?`, [photoId, itemId]);
+    if (!photoRecord) return res.status(404).json({ error: "Photo record not found" });
+
+    const draftPath = resolveValidatedPhotoDraftPath(itemId, photoId, draftUrl);
+    if (!draftPath) {
+      return res.status(400).json({ error: "Draft image not found or invalid." });
+    }
+
+    if (!fs.existsSync(MUSEUM_UPLOADS_DIR)) fs.mkdirSync(MUSEUM_UPLOADS_DIR, { recursive: true });
+    if (!fs.existsSync(MUSEUM_THUMB_UPLOADS_DIR)) fs.mkdirSync(MUSEUM_THUMB_UPLOADS_DIR, { recursive: true });
+
+    const fileBase = `museum-${itemId}-${photoId}-${Date.now()}`;
+    const fullFilename = `${fileBase}.webp`;
+    const thumbFilename = `thumb-${fileBase}.webp`;
+
+    const fullPath = path.join(MUSEUM_UPLOADS_DIR, fullFilename);
+    const thumbPath = path.join(MUSEUM_THUMB_UPLOADS_DIR, thumbFilename);
+
+    const draftBuffer = fs.readFileSync(draftPath);
+
+    await sharp(draftBuffer)
+      .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
+      .toFormat('webp', { quality: 90 })
+      .toFile(fullPath);
+
+    await sharp(draftBuffer)
+      .resize(400, 400, { fit: 'cover' })
+      .toFormat('webp', { quality: 80 })
+      .toFile(thumbPath);
+
+    const museumPhotoUrl = `/uploads/museum/${fullFilename}`;
+    const museumPhotoThumbUrl = `/uploads/museum/thumbs/${thumbFilename}`;
+
+    // Clean up older museum file for this photo if one previously existed
+    if (photoRecord.museum_photo_url && photoRecord.museum_photo_url !== museumPhotoUrl) {
+      const oldRel = photoRecord.museum_photo_url.replace(/^\/uploads\//, '');
+      const oldPath = path.join(UPLOADS_DIR, oldRel);
+      if (fs.existsSync(oldPath)) {
+        try { fs.unlinkSync(oldPath); } catch (e) {}
+      }
+    }
+    if (photoRecord.museum_photo_thumb_url && photoRecord.museum_photo_thumb_url !== museumPhotoThumbUrl) {
+      const oldThumbRel = photoRecord.museum_photo_thumb_url.replace(/^\/uploads\//, '');
+      const oldThumbPath = path.join(UPLOADS_DIR, oldThumbRel);
+      if (fs.existsSync(oldThumbPath)) {
+        try { fs.unlinkSync(oldThumbPath); } catch (e) {}
+      }
+    }
+
+    // Update item_photos record - DO NOT modify items.museum_photo_url
+    await dbRun(`
+      UPDATE item_photos SET
+        museum_photo_url = ?,
+        museum_photo_thumb_url = ?,
+        museum_photo_updated_at = CURRENT_TIMESTAMP,
+        museum_photo_updated_by_user_id = ?,
+        museum_photo_updated_by_user_name = ?
+      WHERE id = ? AND item_id = ?
+    `, [
+      museumPhotoUrl,
+      museumPhotoThumbUrl,
+      req.user.id,
+      req.user.name,
+      photoId,
+      itemId
+    ]);
+
+    // Delete temporary draft file
+    deletePhotoDrafts(itemId, photoId);
+
+    const updatedPhoto = await dbGet(`SELECT * FROM item_photos WHERE id = ?`, [photoId]);
+
+    logAudit(estateId, req.user.id, 'APPROVE_ADDITIONAL_MUSEUM_PHOTO', 'item_photos', photoId, {
+      itemId,
+      photoId,
+      museumPhotoUrl,
+      previousUrl: photoRecord.museum_photo_url || null
+    });
+
+    res.json({ success: true, photo: updatedPhoto });
+  } catch (err) {
+    console.error("Additional museum photo approval error:", err);
+    res.status(500).json({ error: err.message || "Failed to approve museum photo." });
+  }
+});
+
+// Endpoint: Discard / Cancel Additional Photo Draft
+app.delete('/api/admin/items/:id/photos/:photoId/museum-photo/draft', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id: itemId, photoId } = req.params;
+    deletePhotoDrafts(itemId, photoId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to discard draft." });
+  }
+});
+
+// Endpoint: Remove / Clear Additional Museum Photo (keeps the original photo intact)
+app.delete('/api/admin/items/:id/photos/:photoId/museum-photo', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const { id: itemId, photoId } = req.params;
+    const estateId = req.user.estate_id;
+
+    const photoRecord = await dbGet(`SELECT * FROM item_photos WHERE id = ? AND item_id = ?`, [photoId, itemId]);
+    if (!photoRecord) return res.status(404).json({ error: "Photo record not found" });
+
+    // Clean up physical files if not referenced elsewhere
+    if (photoRecord.museum_photo_url) {
+      const otherRefs = await dbGet(`SELECT COUNT(*) as cnt FROM item_photos WHERE museum_photo_url = ? AND id != ?`, [photoRecord.museum_photo_url, photoId]);
+      const itemRefs = await dbGet(`SELECT COUNT(*) as cnt FROM items WHERE museum_photo_url = ?`, [photoRecord.museum_photo_url]);
+      if ((otherRefs?.cnt || 0) === 0 && (itemRefs?.cnt || 0) === 0) {
+        const fullPath = path.join(UPLOADS_DIR, photoRecord.museum_photo_url.replace(/^\/uploads\//, ''));
+        if (fs.existsSync(fullPath)) {
+          try { fs.unlinkSync(fullPath); } catch (e) {}
+        }
+      }
+    }
+    if (photoRecord.museum_photo_thumb_url) {
+      const otherThumbRefs = await dbGet(`SELECT COUNT(*) as cnt FROM item_photos WHERE museum_photo_thumb_url = ? AND id != ?`, [photoRecord.museum_photo_thumb_url, photoId]);
+      const itemThumbRefs = await dbGet(`SELECT COUNT(*) as cnt FROM items WHERE museum_photo_thumb_url = ?`, [photoRecord.museum_photo_thumb_url]);
+      if ((otherThumbRefs?.cnt || 0) === 0 && (itemThumbRefs?.cnt || 0) === 0) {
+        const thumbPath = path.join(UPLOADS_DIR, photoRecord.museum_photo_thumb_url.replace(/^\/uploads\//, ''));
+        if (fs.existsSync(thumbPath)) {
+          try { fs.unlinkSync(thumbPath); } catch (e) {}
+        }
+      }
+    }
+
+    await dbRun(`
+      UPDATE item_photos SET
+        museum_photo_url = NULL,
+        museum_photo_thumb_url = NULL,
+        museum_photo_updated_at = CURRENT_TIMESTAMP,
+        museum_photo_updated_by_user_id = ?,
+        museum_photo_updated_by_user_name = ?
+      WHERE id = ? AND item_id = ?
+    `, [req.user.id, req.user.name, photoId, itemId]);
+
+    const updatedPhoto = await dbGet(`SELECT * FROM item_photos WHERE id = ?`, [photoId]);
+
+    logAudit(estateId, req.user.id, 'DELETE_ADDITIONAL_MUSEUM_PHOTO', 'item_photos', photoId, {
+      itemId,
+      photoId,
+      clearedUrl: photoRecord.museum_photo_url || null
+    });
+
+    res.json({ success: true, photo: updatedPhoto });
+  } catch (err) {
+    console.error("Delete additional museum photo error:", err);
+    res.status(500).json({ error: "Failed to remove museum version" });
+  }
+});
+
+// ----------------------------------------------------
 // ADMIN PHOTO REVIEW & CLEANUP UTILITY
 // ----------------------------------------------------
 
@@ -2105,6 +2422,7 @@ app.get('/api/admin/photo-cleanup/items', authenticateToken, requireRole(['admin
         historicalMuseumPhotos,
         totalPhotoCount,
         hasMultipleOriginals: originalPhotos.length > 1,
+        needsAdditionalMuseum: originalPhotos.length > 1 && originalPhotos.slice(1).some(p => !p.museum_photo_url),
         hasHistoricalMuseum: historicalMuseumPhotos.length > 0
       };
     });
@@ -2116,6 +2434,7 @@ app.get('/api/admin/photo-cleanup/items', authenticateToken, requireRole(['admin
       reviewedNoDeletions: payload.filter(i => i.photo_review_status === 'REVIEWED_NO_DELETIONS').length,
       reviewedPhotosDeleted: payload.filter(i => i.photo_review_status === 'REVIEWED_PHOTOS_DELETED').length,
       multipleOriginals: payload.filter(i => i.hasMultipleOriginals).length,
+      needsAdditionalMuseum: payload.filter(i => i.needsAdditionalMuseum).length,
       hasHistoricalMuseum: payload.filter(i => i.hasHistoricalMuseum).length
     };
 
@@ -2197,7 +2516,49 @@ app.post('/api/admin/photo-cleanup/items/:id/review', authenticateToken, require
           }
         }
 
-        deletedOriginalResults.push({ id: photoId, photo_url: photo.photo_url });
+        // Check if associated additional museum_photo_url is present and unreference it
+        if (photo.museum_photo_url) {
+          const otherMusRefs = await dbGet(
+            `SELECT COUNT(*) as cnt FROM item_photos WHERE museum_photo_url = ?`,
+            [photo.museum_photo_url]
+          );
+          const otherItemMusRefs = await dbGet(
+            `SELECT COUNT(*) as cnt FROM items WHERE museum_photo_url = ?`,
+            [photo.museum_photo_url]
+          );
+          if ((otherMusRefs?.cnt || 0) === 0 && (otherItemMusRefs?.cnt || 0) === 0) {
+            const relMus = photo.museum_photo_url.replace(/^\/uploads\//, '');
+            const musPath = path.join(UPLOADS_DIR, relMus);
+            if (fs.existsSync(musPath)) {
+              try { fs.unlinkSync(musPath); } catch (e) { console.warn("Could not delete additional museum file:", e.message); }
+            }
+          }
+        }
+
+        // Check if associated additional museum_photo_thumb_url is present and unreference it
+        if (photo.museum_photo_thumb_url) {
+          const otherMusThumbRefs = await dbGet(
+            `SELECT COUNT(*) as cnt FROM item_photos WHERE museum_photo_thumb_url = ?`,
+            [photo.museum_photo_thumb_url]
+          );
+          const otherItemMusThumbRefs = await dbGet(
+            `SELECT COUNT(*) as cnt FROM items WHERE museum_photo_thumb_url = ?`,
+            [photo.museum_photo_thumb_url]
+          );
+          if ((otherMusThumbRefs?.cnt || 0) === 0 && (otherItemMusThumbRefs?.cnt || 0) === 0) {
+            const relMusThumb = photo.museum_photo_thumb_url.replace(/^\/uploads\//, '');
+            const musThumbPath = path.join(UPLOADS_DIR, relMusThumb);
+            if (fs.existsSync(musThumbPath)) {
+              try { fs.unlinkSync(musThumbPath); } catch (e) { console.warn("Could not delete additional museum thumb file:", e.message); }
+            }
+          }
+        }
+
+        deletedOriginalResults.push({
+          id: photoId,
+          photo_url: photo.photo_url,
+          had_associated_museum: !!photo.museum_photo_url
+        });
       }
 
       // If a primary photo was deleted, promote top remaining photo to primary
