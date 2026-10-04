@@ -239,6 +239,9 @@ async function initDatabase() {
     db.run(`ALTER TABLE items ADD COLUMN museum_photo_updated_at DATETIME`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN museum_photo_updated_by_user_id TEXT`, () => {});
     db.run(`ALTER TABLE items ADD COLUMN museum_photo_updated_by_user_name TEXT`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN photo_review_status TEXT DEFAULT 'NOT_REVIEWED'`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN photo_review_at DATETIME`, () => {});
+    db.run(`ALTER TABLE items ADD COLUMN photo_review_by_user_id TEXT`, () => {});
 
     // 2. Estates Table Additions (Configurable distribution threshold)
     db.run(`ALTER TABLE estates ADD COLUMN distribution_threshold_value REAL DEFAULT 100.0`, () => {});
@@ -1989,6 +1992,324 @@ app.delete('/api/admin/items/:id/museum-photo/draft', authenticateToken, require
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Failed to discard draft." });
+  }
+});
+
+// ----------------------------------------------------
+// ADMIN PHOTO REVIEW & CLEANUP UTILITY
+// ----------------------------------------------------
+
+/**
+ * Helper to find all historical/superseded museum photos on disk for a given item.
+ * Strictly verifies the filename format: museum-{itemId}-{timestamp}.webp
+ * and ensures the current active museum photo is excluded.
+ */
+function findHistoricalMuseumPhotos(itemId, currentMuseumPhotoUrl) {
+  if (!fs.existsSync(MUSEUM_UPLOADS_DIR)) return [];
+  const currentFilename = currentMuseumPhotoUrl ? path.basename(currentMuseumPhotoUrl) : null;
+  const prefix = `museum-${itemId}-`;
+
+  try {
+    const files = fs.readdirSync(MUSEUM_UPLOADS_DIR);
+    const historical = [];
+
+    for (const f of files) {
+      if (f.startsWith(prefix) && f.endsWith('.webp') && f !== currentFilename) {
+        const escapedId = itemId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const match = f.match(new RegExp(`^museum-${escapedId}-(\\d+)\\.webp$`));
+        if (match) {
+          const timestamp = parseInt(match[1], 10);
+          const fullPath = path.join(MUSEUM_UPLOADS_DIR, f);
+          const thumbFilename = `thumb-${f}`;
+          const thumbPath = path.join(MUSEUM_THUMB_UPLOADS_DIR, thumbFilename);
+          let stats = null;
+          try { stats = fs.statSync(fullPath); } catch (e) {}
+
+          historical.push({
+            id: `hist_${f}`,
+            filename: f,
+            photo_url: `/uploads/museum/${f}`,
+            thumbnail_url: fs.existsSync(thumbPath) ? `/uploads/museum/thumbs/${thumbFilename}` : `/uploads/museum/${f}`,
+            timestamp,
+            sizeBytes: stats ? stats.size : 0,
+            createdAt: stats ? stats.mtime.toISOString() : new Date(timestamp).toISOString(),
+            isHistorical: true
+          });
+        }
+      }
+    }
+
+    historical.sort((a, b) => b.timestamp - a.timestamp);
+    return historical;
+  } catch (err) {
+    console.error(`Failed to scan historical museum photos for item ${itemId}:`, err);
+    return [];
+  }
+}
+
+// Endpoint: Fetch all items for Photo Review & Cleanup
+app.get('/api/admin/photo-cleanup/items', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const items = await dbAll(`
+      SELECT i.*, c.name as category_name, c.icon as category_icon
+      FROM items i
+      LEFT JOIN categories c ON i.category_id = c.id
+      WHERE i.estate_id = ?
+      ORDER BY 
+        CASE 
+          WHEN i.item_number LIKE 'UJ-%' THEN CAST(SUBSTR(i.item_number, 4) AS INTEGER)
+          ELSE 999999
+        END ASC,
+        i.item_number ASC,
+        i.created_at ASC
+    `, [estateId]);
+
+    const allPhotos = await dbAll(`
+      SELECT * FROM item_photos 
+      WHERE item_id IN (SELECT id FROM items WHERE estate_id = ?)
+      ORDER BY is_primary DESC, display_order ASC, created_at ASC
+    `, [estateId]);
+
+    const photosByItem = {};
+    for (const p of allPhotos) {
+      if (!photosByItem[p.item_id]) photosByItem[p.item_id] = [];
+      photosByItem[p.item_id].push(p);
+    }
+
+    const payload = items.map(item => {
+      const originalPhotos = photosByItem[item.id] || [];
+      const historicalMuseumPhotos = findHistoricalMuseumPhotos(item.id, item.museum_photo_url);
+
+      const currentMuseumPhoto = item.museum_photo_url ? {
+        url: item.museum_photo_url,
+        thumbUrl: item.museum_photo_thumb_url || item.museum_photo_url,
+        updatedAt: item.museum_photo_updated_at,
+        updatedBy: item.museum_photo_updated_by_user_name,
+        isCurrentMuseum: true
+      } : null;
+
+      const totalPhotoCount = (currentMuseumPhoto ? 1 : 0) + originalPhotos.length + historicalMuseumPhotos.length;
+
+      return {
+        id: item.id,
+        item_number: item.item_number,
+        title: item.title,
+        category_id: item.category_id,
+        category_name: item.category_name,
+        category_icon: item.category_icon,
+        photo_review_status: item.photo_review_status || 'NOT_REVIEWED',
+        photo_review_at: item.photo_review_at || null,
+        currentMuseumPhoto,
+        originalPhotos,
+        historicalMuseumPhotos,
+        totalPhotoCount,
+        hasMultipleOriginals: originalPhotos.length > 1,
+        hasHistoricalMuseum: historicalMuseumPhotos.length > 0
+      };
+    });
+
+    const stats = {
+      total: payload.length,
+      notReviewed: payload.filter(i => i.photo_review_status === 'NOT_REVIEWED').length,
+      reviewed: payload.filter(i => i.photo_review_status && i.photo_review_status !== 'NOT_REVIEWED').length,
+      reviewedNoDeletions: payload.filter(i => i.photo_review_status === 'REVIEWED_NO_DELETIONS').length,
+      reviewedPhotosDeleted: payload.filter(i => i.photo_review_status === 'REVIEWED_PHOTOS_DELETED').length,
+      multipleOriginals: payload.filter(i => i.hasMultipleOriginals).length,
+      hasHistoricalMuseum: payload.filter(i => i.hasHistoricalMuseum).length
+    };
+
+    res.json({ items: payload, stats });
+  } catch (err) {
+    console.error("Photo cleanup items error:", err);
+    res.status(500).json({ error: "Failed to load photo cleanup items: " + err.message });
+  }
+});
+
+// Endpoint: Commit Review Decisions (with safe deletions)
+app.post('/api/admin/photo-cleanup/items/:id/review', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const estateId = req.user.estate_id;
+    const { deleteOriginalPhotoIds = [], deleteHistoricalFilenames = [] } = req.body;
+
+    const item = await dbGet(`SELECT * FROM items WHERE id = ? AND estate_id = ?`, [itemId, estateId]);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    const deletedOriginalResults = [];
+    const deletedHistoricalResults = [];
+
+    // 1. Process Original / Additional Original Photo Deletions
+    if (Array.isArray(deleteOriginalPhotoIds) && deleteOriginalPhotoIds.length > 0) {
+      const existingPhotos = await dbAll(
+        `SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`,
+        [itemId]
+      );
+
+      const remainingPhotos = existingPhotos.filter(p => !deleteOriginalPhotoIds.includes(p.id));
+
+      // CRITICAL SAFETY CHECK: Never allow removal of the only remaining original photo
+      if (remainingPhotos.length === 0) {
+        return res.status(400).json({
+          error: "Safety violation: Cannot delete the only remaining original photograph for an item."
+        });
+      }
+
+      for (const photoId of deleteOriginalPhotoIds) {
+        const photo = existingPhotos.find(p => p.id === photoId);
+        if (!photo) continue;
+
+        // Delete from database
+        await dbRun(`DELETE FROM item_photos WHERE id = ? AND item_id = ?`, [photoId, itemId]);
+
+        // Check if photo_url is referenced elsewhere before removing file
+        if (photo.photo_url) {
+          const otherPhotoRefs = await dbGet(
+            `SELECT COUNT(*) as cnt FROM item_photos WHERE photo_url = ?`,
+            [photo.photo_url]
+          );
+          const otherItemRefs = await dbGet(
+            `SELECT COUNT(*) as cnt FROM items WHERE museum_photo_url = ?`,
+            [photo.photo_url]
+          );
+
+          if ((otherPhotoRefs?.cnt || 0) === 0 && (otherItemRefs?.cnt || 0) === 0) {
+            const relPath = photo.photo_url.replace(/^\/uploads\//, '');
+            const fullPath = path.join(UPLOADS_DIR, relPath);
+            if (fs.existsSync(fullPath)) {
+              try { fs.unlinkSync(fullPath); } catch (e) { console.warn("Could not delete full file:", e.message); }
+            }
+          }
+        }
+
+        // Check if thumbnail_url is referenced elsewhere before removing file
+        if (photo.thumbnail_url) {
+          const otherThumbRefs = await dbGet(
+            `SELECT COUNT(*) as cnt FROM item_photos WHERE thumbnail_url = ?`,
+            [photo.thumbnail_url]
+          );
+          if ((otherThumbRefs?.cnt || 0) === 0) {
+            const relThumb = photo.thumbnail_url.replace(/^\/uploads\//, '');
+            const thumbPath = path.join(UPLOADS_DIR, relThumb);
+            if (fs.existsSync(thumbPath)) {
+              try { fs.unlinkSync(thumbPath); } catch (e) { console.warn("Could not delete thumb file:", e.message); }
+            }
+          }
+        }
+
+        deletedOriginalResults.push({ id: photoId, photo_url: photo.photo_url });
+      }
+
+      // If a primary photo was deleted, promote top remaining photo to primary
+      const currentPrimary = await dbGet(
+        `SELECT id FROM item_photos WHERE item_id = ? AND is_primary = 1`,
+        [itemId]
+      );
+      if (!currentPrimary && remainingPhotos.length > 0) {
+        await dbRun(
+          `UPDATE item_photos SET is_primary = 1, display_order = 0 WHERE id = ?`,
+          [remainingPhotos[0].id]
+        );
+      }
+    }
+
+    // 2. Process Historical Museum Photo Deletions
+    if (Array.isArray(deleteHistoricalFilenames) && deleteHistoricalFilenames.length > 0) {
+      const currentMuseumBasename = item.museum_photo_url ? path.basename(item.museum_photo_url) : null;
+
+      for (const filename of deleteHistoricalFilenames) {
+        // Security validation: Must match museum-{itemId}-{timestamp}.webp
+        const escapedId = itemId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const validPattern = new RegExp(`^museum-${escapedId}-\\d+\\.webp$`);
+        if (!validPattern.test(filename)) {
+          console.warn(`Skipping invalid historical filename: ${filename} for item ${itemId}`);
+          continue;
+        }
+
+        // SAFETY: Never delete the active current museum photo
+        if (filename === currentMuseumBasename) {
+          console.warn(`Safety block: Attempted to delete active museum photo: ${filename}`);
+          continue;
+        }
+
+        const fullPath = path.join(MUSEUM_UPLOADS_DIR, filename);
+        const thumbFilename = `thumb-${filename}`;
+        const thumbPath = path.join(MUSEUM_THUMB_UPLOADS_DIR, thumbFilename);
+
+        if (fs.existsSync(fullPath)) {
+          try { fs.unlinkSync(fullPath); } catch (e) { console.warn("Could not delete historical museum full:", e.message); }
+        }
+        if (fs.existsSync(thumbPath)) {
+          try { fs.unlinkSync(thumbPath); } catch (e) { console.warn("Could not delete historical museum thumb:", e.message); }
+        }
+
+        deletedHistoricalResults.push(filename);
+      }
+    }
+
+    // 3. Update Review Status
+    const hadDeletions = deletedOriginalResults.length > 0 || deletedHistoricalResults.length > 0;
+    const newStatus = hadDeletions ? 'REVIEWED_PHOTOS_DELETED' : 'REVIEWED_NO_DELETIONS';
+
+    await dbRun(`
+      UPDATE items 
+      SET photo_review_status = ?,
+          photo_review_at = CURRENT_TIMESTAMP,
+          photo_review_by_user_id = ?
+      WHERE id = ? AND estate_id = ?
+    `, [newStatus, req.user.id, itemId, estateId]);
+
+    // 4. Audit Log
+    logAudit(estateId, req.user.id, 'PHOTO_REVIEW_CLEANUP', 'items', itemId, {
+      photoReviewStatus: newStatus,
+      deletedOriginalCount: deletedOriginalResults.length,
+      deletedOriginalIds: deletedOriginalResults.map(r => r.id),
+      deletedHistoricalCount: deletedHistoricalResults.length,
+      deletedHistoricalFilenames: deletedHistoricalResults
+    });
+
+    // 5. Return updated item photo state
+    const updatedOriginal = await dbAll(
+      `SELECT * FROM item_photos WHERE item_id = ? ORDER BY is_primary DESC, display_order ASC`,
+      [itemId]
+    );
+    const updatedHistorical = findHistoricalMuseumPhotos(itemId, item.museum_photo_url);
+
+    res.json({
+      success: true,
+      itemId,
+      photoReviewStatus: newStatus,
+      deletedOriginalCount: deletedOriginalResults.length,
+      deletedHistoricalCount: deletedHistoricalResults.length,
+      originalPhotos: updatedOriginal,
+      historicalMuseumPhotos: updatedHistorical
+    });
+  } catch (err) {
+    console.error("Photo cleanup review error:", err);
+    res.status(500).json({ error: "Failed to process photo review: " + err.message });
+  }
+});
+
+// Endpoint: Reset Review Status (Mark as Not Reviewed)
+app.post('/api/admin/photo-cleanup/items/:id/reset', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const itemId = req.params.id;
+    const estateId = req.user.estate_id;
+
+    await dbRun(`
+      UPDATE items 
+      SET photo_review_status = 'NOT_REVIEWED',
+          photo_review_at = NULL,
+          photo_review_by_user_id = NULL
+      WHERE id = ? AND estate_id = ?
+    `, [itemId, estateId]);
+
+    logAudit(estateId, req.user.id, 'PHOTO_REVIEW_RESET', 'items', itemId, {});
+
+    res.json({ success: true, itemId, photoReviewStatus: 'NOT_REVIEWED' });
+  } catch (err) {
+    console.error("Reset photo review error:", err);
+    res.status(500).json({ error: "Failed to reset review status" });
   }
 });
 

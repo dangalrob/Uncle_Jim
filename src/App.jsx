@@ -18,6 +18,7 @@ import PhotoCropperModal from './components/PhotoCropperModal';
 import LegacyNormalizationWizard from './components/LegacyNormalizationWizard';
 import AIAssessmentWizard from './components/AIAssessmentWizard';
 import MuseumPhotoReview from './components/MuseumPhotoReview';
+import PhotoReviewCleanup from './components/PhotoReviewCleanup';
 
 export function getGreeting(date = new Date()) {
   const hour = date.getHours();
@@ -2661,6 +2662,10 @@ export default function App() {
 
                 <button className={`sidebar-item ${currentView === 'museum_photo_review' ? 'active' : ''}`} onClick={() => { setCurrentView('museum_photo_review'); setMobileNavOpen(false); }}>
                   <Camera size={18} color="var(--gold-accent)" /> Museum Photo Review
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'photo_review_cleanup' ? 'active' : ''}`} onClick={() => { setCurrentView('photo_review_cleanup'); setMobileNavOpen(false); }}>
+                  <Images size={18} color="var(--gold-accent)" /> Photo Review & Cleanup
                 </button>
 
                 {/* Mobile & Admin Operational Controls Section */}
@@ -6474,6 +6479,18 @@ export default function App() {
               }}
               onEditItem={(item) => handleStartEditItem(item)}
               onClose={handleNavigateHome}
+            />
+          )}
+
+          {/* ADMIN PHOTO REVIEW & CLEANUP STUDIO */}
+          {currentView === 'photo_review_cleanup' && currentUser?.role === 'admin' && (
+            <PhotoReviewCleanup
+              currentUser={currentUser}
+              onClose={handleNavigateHome}
+              onUpdateItem={(updatedItem) => {
+                setItems(prev => prev.map(it => it.id === updatedItem.id ? { ...it, ...updatedItem } : it));
+                fetchItems();
+              }}
             />
           )}
 
