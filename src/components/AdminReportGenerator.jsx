@@ -416,7 +416,7 @@ export default function AdminReportGenerator({ currentUser, onClose }) {
                         {f.id === 'normalized_description' ? 'Curated / Clean' : 'Raw Legacy Baseline'}
                       </span>
                     )}
-                    {isValuationField && (
+                    {f.id === 'estimated_value' && (
                       <span style={{ 
                         fontSize: '0.7rem', 
                         padding: '1px 6px', 
@@ -425,7 +425,31 @@ export default function AdminReportGenerator({ currentUser, onClose }) {
                         color: '#0369a1',
                         fontWeight: 600
                       }}>
-                        {f.id === 'normalized_valuation' ? 'Distribution / Assessment' : 'Original Text Value'}
+                        Admin Review Value
+                      </span>
+                    )}
+                    {f.id === 'normalized_valuation' && (
+                      <span style={{ 
+                        fontSize: '0.7rem', 
+                        padding: '1px 6px', 
+                        borderRadius: '4px', 
+                        background: '#fef3c7',
+                        color: '#92400e',
+                        fontWeight: 600
+                      }}>
+                        Distribution / Assessment
+                      </span>
+                    )}
+                    {f.id === 'original_value' && (
+                      <span style={{ 
+                        fontSize: '0.7rem', 
+                        padding: '1px 6px', 
+                        borderRadius: '4px', 
+                        background: '#f3f4f6',
+                        color: '#4b5563',
+                        fontWeight: 600
+                      }}>
+                        Baseline Snapshot
                       </span>
                     )}
                   </div>

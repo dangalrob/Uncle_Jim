@@ -16,17 +16,18 @@ export const AVAILABLE_FIELDS = [
   { id: 'category', label: 'Category', defaultSelected: true, defaultOrder: 3, width: 22 },
   { id: 'normalized_description', label: 'Normalized Description', defaultSelected: true, defaultOrder: 4, width: 50 },
   { id: 'original_description', label: 'Original / Raw Legacy Description', defaultSelected: true, defaultOrder: 5, width: 50 },
-  { id: 'original_value', label: 'Estimated / Original Recorded Value', defaultSelected: true, defaultOrder: 6, width: 20 },
-  { id: 'normalized_valuation', label: 'Normalized Valuation / Assessment', defaultSelected: true, defaultOrder: 7, width: 25 },
-  { id: 'destination', label: 'Destination', defaultSelected: true, defaultOrder: 8, width: 16 },
-  { id: 'institution', label: 'Institution', defaultSelected: true, defaultOrder: 9, width: 24 },
-  { id: 'assigned_to', label: 'Assigned To', defaultSelected: false, defaultOrder: 10, width: 22 },
-  { id: 'dimensions', label: 'Dimensions', defaultSelected: false, defaultOrder: 11, width: 20 },
-  { id: 'location', label: 'Location', defaultSelected: false, defaultOrder: 12, width: 22 },
-  { id: 'notes', label: 'Notes', defaultSelected: false, defaultOrder: 13, width: 35 },
-  { id: 'family_status', label: 'Family Review Status', defaultSelected: false, defaultOrder: 14, width: 18 },
-  { id: 'museum_photo_url', label: 'Primary Museum Photo URL', defaultSelected: false, defaultOrder: 15, width: 35 },
-  { id: 'original_photo_url', label: 'Primary Original Photo URL', defaultSelected: false, defaultOrder: 16, width: 35 }
+  { id: 'estimated_value', label: 'Estimated Value', defaultSelected: true, defaultOrder: 6, width: 20 },
+  { id: 'normalized_valuation', label: 'Normalized Valuation / Assessment', defaultSelected: false, defaultOrder: 7, width: 25 },
+  { id: 'original_value', label: 'Original Recorded Value (Baseline Snapshot)', defaultSelected: false, defaultOrder: 8, width: 25 },
+  { id: 'destination', label: 'Destination', defaultSelected: true, defaultOrder: 9, width: 16 },
+  { id: 'institution', label: 'Institution', defaultSelected: true, defaultOrder: 10, width: 24 },
+  { id: 'assigned_to', label: 'Assigned To', defaultSelected: false, defaultOrder: 11, width: 22 },
+  { id: 'dimensions', label: 'Dimensions', defaultSelected: false, defaultOrder: 12, width: 20 },
+  { id: 'location', label: 'Location', defaultSelected: false, defaultOrder: 13, width: 22 },
+  { id: 'notes', label: 'Notes', defaultSelected: false, defaultOrder: 14, width: 35 },
+  { id: 'family_status', label: 'Family Review Status', defaultSelected: false, defaultOrder: 15, width: 18 },
+  { id: 'museum_photo_url', label: 'Primary Museum Photo URL', defaultSelected: false, defaultOrder: 16, width: 35 },
+  { id: 'original_photo_url', label: 'Primary Original Photo URL', defaultSelected: false, defaultOrder: 17, width: 35 }
 ];
 
 export const POPULATIONS = [
@@ -147,6 +148,7 @@ export async function fetchReportRows({ population = 'all', customFilter = {}, e
       c.name as category,
       i.description as normalized_description,
       COALESCE(s.original_description, i.legacy_assessment_notes, i.description) as original_description,
+      i.value as estimated_value,
       COALESCE(s.original_value, i.value) as original_value,
       i.distribution_value,
       i.estimated_value_low,
@@ -192,6 +194,9 @@ export async function fetchReportRows({ population = 'all', customFilter = {}, e
     else if (destLabel === 'undecided') destLabel = 'Undecided';
     else if (destLabel === 'charity') destLabel = 'Charity';
 
+    // Preserve exact stored text from items.value for Estimated Value (no conversion, no midpoints, no reformatting)
+    const exactEstimatedValue = r.estimated_value !== null && r.estimated_value !== undefined ? String(r.estimated_value) : '';
+
     return {
       id: r.id,
       item_number: r.item_number || '',
@@ -199,7 +204,9 @@ export async function fetchReportRows({ population = 'all', customFilter = {}, e
       category: r.category || 'Uncategorized',
       normalized_description: r.normalized_description || '',
       original_description: r.original_description || '',
-      original_value: r.original_value || '',
+      estimated_value: exactEstimatedValue,
+      value: exactEstimatedValue,
+      original_value: r.original_value !== null && r.original_value !== undefined ? String(r.original_value) : '',
       normalized_valuation: normVal,
       destination: destLabel,
       institution: r.institution || '',
