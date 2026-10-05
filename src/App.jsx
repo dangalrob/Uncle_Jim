@@ -6,7 +6,7 @@ import {
   X, Check, Mail, Lock, Unlock, AlertCircle, Share2, HelpCircle, Menu,
   Wifi, WifiOff, UploadCloud, Building2, FileText, Sparkles, Loader2, Trash2, ImageOff,
   Edit3, Plus, Star, RotateCcw, Clock, RefreshCw, Award, DollarSign, Crop,
-  LogOut, Activity, MessageSquare, MessageCircle, Key, Database, Download, ShieldCheck, Images
+  LogOut, Activity, MessageSquare, MessageCircle, Key, Database, Download, ShieldCheck, Images, Anchor
 } from 'lucide-react';
 import { offlineStorage } from './services/offlineStorage';
 import { thumbnailCache } from './services/thumbnailCache';
@@ -19,6 +19,8 @@ import LegacyNormalizationWizard from './components/LegacyNormalizationWizard';
 import AIAssessmentWizard from './components/AIAssessmentWizard';
 import MuseumPhotoReview from './components/MuseumPhotoReview';
 import PhotoReviewCleanup from './components/PhotoReviewCleanup';
+import AdminReportGenerator from './components/AdminReportGenerator';
+import MaritimeMuseumReportView from './components/MaritimeMuseumReportView';
 
 export function getGreeting(date = new Date()) {
   const hour = date.getHours();
@@ -2668,6 +2670,14 @@ export default function App() {
                   <Images size={18} color="var(--gold-accent)" /> Photo Review & Cleanup
                 </button>
 
+                <button className={`sidebar-item ${currentView === 'report_generator' ? 'active' : ''}`} onClick={() => { setCurrentView('report_generator'); setMobileNavOpen(false); }}>
+                  <FileText size={18} color="var(--gold-accent)" /> Report Generator
+                </button>
+
+                <button className={`sidebar-item ${currentView === 'maritime_report' ? 'active' : ''}`} onClick={() => { setCurrentView('maritime_report'); setMobileNavOpen(false); }}>
+                  <Anchor size={18} color="var(--gold-accent)" /> Maritime Catalog (PDF)
+                </button>
+
                 {/* Mobile & Admin Operational Controls Section */}
                 <div style={{ margin: '0.75rem 0.5rem 0.25rem', paddingTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
                   <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'rgba(255,255,255,0.5)', fontWeight: 600, padding: '0 0.5rem 0.35rem' }}>
@@ -3397,6 +3407,30 @@ export default function App() {
                     <div style={{ textAlign: 'left' }}>
                       <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--pine-deep)' }}>User Management</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Active users & security</div>
+                    </div>
+                  </button>
+
+                  <button
+                    className="btn-outline"
+                    style={{ padding: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.65rem', justifyContent: 'flex-start', background: '#fff' }}
+                    onClick={() => { setCurrentView('report_generator'); }}
+                  >
+                    <FileText size={18} color="var(--pine-primary)" />
+                    <div style={{ textAlign: 'left' }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--pine-deep)' }}>Report Generator</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Custom CSV & Excel wizard</div>
+                    </div>
+                  </button>
+
+                  <button
+                    className="btn-outline"
+                    style={{ padding: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.65rem', justifyContent: 'flex-start', background: '#fff' }}
+                    onClick={() => { setCurrentView('maritime_report'); }}
+                  >
+                    <Anchor size={18} color="var(--pine-primary)" />
+                    <div style={{ textAlign: 'left' }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--pine-deep)' }}>Maritime Museum Catalog</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Curatorial PDF publication</div>
                     </div>
                   </button>
                 </div>
@@ -6491,6 +6525,22 @@ export default function App() {
                 setItems(prev => prev.map(it => it.id === updatedItem.id ? { ...it, ...updatedItem } : it));
                 fetchItems();
               }}
+            />
+          )}
+
+          {/* ADMIN CUSTOM REPORT GENERATOR */}
+          {currentView === 'report_generator' && currentUser?.role === 'admin' && (
+            <AdminReportGenerator
+              currentUser={currentUser}
+              onClose={handleNavigateHome}
+            />
+          )}
+
+          {/* MARITIME MUSEUM REPORT CATALOG */}
+          {currentView === 'maritime_report' && currentUser?.role === 'admin' && (
+            <MaritimeMuseumReportView
+              currentUser={currentUser}
+              onClose={handleNavigateHome}
             />
           )}
 

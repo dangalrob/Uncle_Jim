@@ -14,6 +14,14 @@ import { extractLegacyData } from './services/legacyNormalization.js';
 import { generateAIAssessment } from './services/aiAssessment.js';
 import { assessItem } from './services/itemAssessmentEngine.js';
 import { generateMuseumPhoto, reviseMuseumPhoto } from './services/imageEditService.js';
+import {
+  AVAILABLE_FIELDS,
+  POPULATIONS,
+  fetchReportRows,
+  generateCsv,
+  generateExcel,
+  streamMaritimeCatalogPdf
+} from './services/reportService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -5000,6 +5008,106 @@ app.get('/api/admin/audit-logs', authenticateToken, requireRole(['admin']), asyn
   } catch (err) {
     console.error("Audit logs error:", err);
     res.status(500).json({ error: "Failed to fetch audit logs" });
+  }
+});
+
+// ==========================================
+// ADMIN REPORTING SUITE (CUSTOM REPORTS & MARITIME PDF)
+// ==========================================
+
+// Report config: available fields and populations with dynamic counts
+app.get('/api/admin/reports/config', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const populationsWithCounts = await Promise.all(
+      POPULATIONS.map(async (pop) => {
+        const rows = await fetchReportRows({ population: pop.id, estateId, dbAll });
+        return {
+          ...pop,
+          count: rows.length
+        };
+      })
+    );
+
+    res.json({
+      fields: AVAILABLE_FIELDS,
+      populations: populationsWithCounts
+    });
+  } catch (err) {
+    console.error("Report config error:", err);
+    res.status(500).json({ error: "Failed to load report configuration" });
+  }
+});
+
+// Report preview: first 5 rows and total count
+app.post('/api/admin/reports/preview', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const { population = 'all', customFilter = {}, fields = [], limit = 5 } = req.body;
+
+    const rows = await fetchReportRows({ population, customFilter, estateId, dbAll });
+    
+    // Pick selected fields in the exact requested order
+    const orderedKeys = fields.length > 0 ? fields : AVAILABLE_FIELDS.filter(f => f.defaultSelected).map(f => f.id);
+    const sampleRows = (limit > 0 ? rows.slice(0, limit) : rows).map(r => {
+      const rowObj = {};
+      orderedKeys.forEach(k => {
+        rowObj[k] = r[k] !== undefined ? r[k] : '';
+      });
+      return rowObj;
+    });
+
+    res.json({
+      totalCount: rows.length,
+      sampleRows,
+      fields: orderedKeys
+    });
+  } catch (err) {
+    console.error("Report preview error:", err);
+    res.status(500).json({ error: "Failed to generate report preview" });
+  }
+});
+
+// Custom Report Export: CSV or Excel (.xlsx)
+app.post('/api/admin/reports/export', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    const { population = 'all', customFilter = {}, fields = [], format = 'csv' } = req.body;
+
+    const rows = await fetchReportRows({ population, customFilter, estateId, dbAll });
+    const orderedKeys = fields.length > 0 ? fields : AVAILABLE_FIELDS.filter(f => f.defaultSelected).map(f => f.id);
+
+    const dateSlug = new Date().toISOString().slice(0, 10);
+    const popSlug = population.replace(/_/g, '-');
+    const baseFilename = `uncle-jim-${popSlug}-inventory-${dateSlug}`;
+
+    if (format === 'xlsx') {
+      const buffer = await generateExcel(rows, orderedKeys, 'Inventory Report');
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${baseFilename}.xlsx"`);
+      return res.send(buffer);
+    } else {
+      const csv = generateCsv(rows, orderedKeys);
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${baseFilename}.csv"`);
+      return res.send(csv);
+    }
+  } catch (err) {
+    console.error("Report export error:", err);
+    res.status(500).json({ error: "Failed to export report" });
+  }
+});
+
+// Maritime Museum PDF Catalog
+app.get('/api/admin/reports/maritime-pdf', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    await streamMaritimeCatalogPdf(res, { estateId, dbAll });
+  } catch (err) {
+    console.error("Maritime PDF generation error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Failed to generate Maritime Museum PDF catalog" });
+    }
   }
 });
 
