@@ -166,8 +166,11 @@ export async function fetchReportRows({ population = 'all', customFilter = {}, e
     FROM items i
     LEFT JOIN categories c ON i.category_id = c.id
     LEFT JOIN item_legacy_snapshots s ON s.item_id = i.id AND s.snapshot_type = 'PRE_NORMALIZATION_BASELINE'
+    ${population === 'maritime' ? 'LEFT JOIN maritime_catalog_order mco ON mco.item_id = i.id' : ''}
     WHERE ${whereClause}
-    ORDER BY CAST(SUBSTR(i.item_number, 4) AS INTEGER) ASC, i.item_number ASC
+    ORDER BY 
+      ${population === 'maritime' ? 'CASE WHEN mco.order_index IS NOT NULL THEN 0 ELSE 1 END ASC, mco.order_index ASC,' : ''}
+      CAST(SUBSTR(i.item_number, 4) AS INTEGER) ASC, i.item_number ASC
   `;
 
   const rawRows = await dbAll(query, params);
@@ -350,9 +353,14 @@ export async function streamMaritimeCatalogPdf(res, { estateId, dbAll }) {
   const query = `
     SELECT id, item_number, title, description, museum_photo_url
     FROM items i
+    LEFT JOIN maritime_catalog_order mco ON mco.item_id = i.id
     WHERE i.institutional_candidate = 'Maritime Museum'
       ${estateId ? 'AND (i.estate_id = ? OR i.estate_id IS NULL)' : ''}
-    ORDER BY CAST(SUBSTR(i.item_number, 4) AS INTEGER) ASC, i.item_number ASC
+    ORDER BY 
+      CASE WHEN mco.order_index IS NOT NULL THEN 0 ELSE 1 END ASC,
+      mco.order_index ASC,
+      CAST(SUBSTR(i.item_number, 4) AS INTEGER) ASC,
+      i.item_number ASC
   `;
 
   const items = await dbAll(query, estateId ? [estateId] : []);

@@ -385,6 +385,14 @@ async function initDatabase() {
       PRIMARY KEY (estate_id, order_index)
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS maritime_catalog_order (
+      item_id TEXT PRIMARY KEY,
+      estate_id TEXT,
+      order_index INTEGER NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_maritime_order_index ON maritime_catalog_order (order_index)`);
+
     db.run(`CREATE TABLE IF NOT EXISTS draft_picks (
       id TEXT PRIMARY KEY,
       estate_id TEXT NOT NULL,
@@ -5054,6 +5062,7 @@ app.post('/api/admin/reports/preview', authenticateToken, requireRole(['admin'])
       orderedKeys.forEach(k => {
         rowObj[k] = r[k] !== undefined ? r[k] : '';
       });
+      if (r.id) rowObj.id = r.id;
       return rowObj;
     });
 
@@ -5108,6 +5117,104 @@ app.get('/api/admin/reports/maritime-pdf', authenticateToken, requireRole(['admi
     if (!res.headersSent) {
       res.status(500).json({ error: "Failed to generate Maritime Museum PDF catalog" });
     }
+  }
+});
+
+// Get current saved Maritime Museum catalog order
+app.get('/api/admin/reports/maritime-order', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id || 'estate_uncle_jim';
+    const rows = await dbAll(
+      `SELECT item_id, order_index, updated_at FROM maritime_catalog_order WHERE estate_id = ? OR estate_id IS NULL ORDER BY order_index ASC`,
+      [estateId]
+    );
+    res.json({ order: rows });
+  } catch (err) {
+    console.error("Failed to fetch maritime catalog order:", err);
+    res.status(500).json({ error: "Failed to load maritime catalog order" });
+  }
+});
+
+// Save updated Maritime Museum catalog order
+app.put('/api/admin/reports/maritime-order', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id || 'estate_uncle_jim';
+    const { itemIds } = req.body;
+
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      return res.status(400).json({ error: "An array of artifact IDs ('itemIds') is required." });
+    }
+
+    // Check for duplicates
+    const idSet = new Set(itemIds);
+    if (idSet.size !== itemIds.length) {
+      return res.status(400).json({ error: "Duplicate artifact IDs are not allowed in order list." });
+    }
+
+    // Verify all itemIds exist in database
+    const placeholders = itemIds.map(() => '?').join(',');
+    const foundItems = await dbAll(
+      `SELECT id FROM items WHERE id IN (${placeholders})`,
+      itemIds
+    );
+
+    if (foundItems.length !== itemIds.length) {
+      return res.status(400).json({ error: "One or more artifact IDs do not exist in the estate inventory." });
+    }
+
+    // Persist atomically in a SQLite transaction
+    await new Promise((resolve, reject) => {
+      db.serialize(() => {
+        db.run('BEGIN TRANSACTION');
+
+        db.run(
+          `DELETE FROM maritime_catalog_order WHERE estate_id = ? OR estate_id IS NULL`,
+          [estateId],
+          (delErr) => {
+            if (delErr) {
+              db.run('ROLLBACK');
+              return reject(delErr);
+            }
+
+            const stmt = db.prepare(`
+              INSERT INTO maritime_catalog_order (item_id, estate_id, order_index, updated_at)
+              VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            `);
+
+            itemIds.forEach((id, index) => {
+              stmt.run([id, estateId, index]);
+            });
+
+            stmt.finalize((finErr) => {
+              if (finErr) {
+                db.run('ROLLBACK');
+                return reject(finErr);
+              }
+
+              db.run('COMMIT', (commitErr) => {
+                if (commitErr) {
+                  db.run('ROLLBACK');
+                  return reject(commitErr);
+                }
+                resolve();
+              });
+            });
+          }
+        );
+      });
+    });
+
+    // Record curatorial audit trail
+    await logAudit(estateId, req.user.id, 'REORDER_MARITIME_CATALOG', 'catalog', 'maritime', { count: itemIds.length });
+
+    res.json({
+      success: true,
+      message: "Maritime Museum Catalog order successfully saved.",
+      count: itemIds.length
+    });
+  } catch (err) {
+    console.error("Failed to save maritime catalog order:", err);
+    res.status(500).json({ error: "Failed to save maritime catalog order." });
   }
 });
 
