@@ -20,7 +20,9 @@ import {
   fetchReportRows,
   generateCsv,
   generateExcel,
-  streamMaritimeCatalogPdf
+  streamMaritimeCatalogPdf,
+  streamMaritimeCatalogDocx,
+  generateMaritimeCatalogDocx
 } from './services/reportService.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -5107,15 +5109,41 @@ app.post('/api/admin/reports/export', authenticateToken, requireRole(['admin']),
   }
 });
 
-// Maritime Museum PDF Catalog
+// Maritime Museum Word (.docx) Catalog
+app.get('/api/admin/reports/maritime-docx', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    await streamMaritimeCatalogDocx(res, { estateId, dbAll });
+  } catch (err) {
+    console.error("Maritime Word (.docx) generation error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Failed to generate Maritime Museum Word catalog" });
+    }
+  }
+});
+
+// Alias for maritime-doc
+app.get('/api/admin/reports/maritime-doc', authenticateToken, requireRole(['admin']), async (req, res) => {
+  try {
+    const estateId = req.user.estate_id;
+    await streamMaritimeCatalogDocx(res, { estateId, dbAll });
+  } catch (err) {
+    console.error("Maritime Word (.docx) generation error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Failed to generate Maritime Museum Word catalog" });
+    }
+  }
+});
+
+// Maritime Museum Catalog export (serves Word docx)
 app.get('/api/admin/reports/maritime-pdf', authenticateToken, requireRole(['admin']), async (req, res) => {
   try {
     const estateId = req.user.estate_id;
-    await streamMaritimeCatalogPdf(res, { estateId, dbAll });
+    await streamMaritimeCatalogDocx(res, { estateId, dbAll });
   } catch (err) {
-    console.error("Maritime PDF generation error:", err);
+    console.error("Maritime document generation error:", err);
     if (!res.headersSent) {
-      res.status(500).json({ error: "Failed to generate Maritime Museum PDF catalog" });
+      res.status(500).json({ error: "Failed to generate Maritime Museum catalog document" });
     }
   }
 });

@@ -2675,7 +2675,7 @@ export default function App() {
                 </button>
 
                 <button className={`sidebar-item ${currentView === 'maritime_report' ? 'active' : ''}`} onClick={() => { setCurrentView('maritime_report'); setMobileNavOpen(false); }}>
-                  <Anchor size={18} color="var(--gold-accent)" /> Maritime Catalog (PDF)
+                  <Anchor size={18} color="var(--gold-accent)" /> Maritime Catalog (Word)
                 </button>
 
                 {/* Mobile & Admin Operational Controls Section */}
@@ -3430,7 +3430,7 @@ export default function App() {
                     <Anchor size={18} color="var(--pine-primary)" />
                     <div style={{ textAlign: 'left' }}>
                       <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--pine-deep)' }}>Maritime Museum Catalog</div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Curatorial PDF publication</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Curatorial Word (.docx) publication</div>
                     </div>
                   </button>
                 </div>

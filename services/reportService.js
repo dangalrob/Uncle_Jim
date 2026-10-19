@@ -4,6 +4,22 @@ import PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 import sharp from 'sharp';
 import { fileURLToPath } from 'url';
+import { 
+  Document as DocxDocument, 
+  Packer as DocxPacker, 
+  Paragraph as DocxParagraph, 
+  TextRun as DocxTextRun, 
+  ImageRun as DocxImageRun, 
+  Table as DocxTable, 
+  TableRow as DocxTableRow, 
+  TableCell as DocxTableCell, 
+  AlignmentType as DocxAlignmentType, 
+  WidthType as DocxWidthType, 
+  BorderStyle as DocxBorderStyle, 
+  PageNumber as DocxPageNumber, 
+  Header as DocxHeader,
+  Footer as DocxFooter
+} from 'docx';
 import { cleanDescriptionText } from './itemAssessmentEngine.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -344,6 +360,399 @@ async function prepareCatalogImage(photoUrl) {
     console.warn(`Error converting image for PDF: ${cleanPath}`, err.message);
     return null;
   }
+}
+
+/**
+ * Helper to prepare image for Word document with scaled dimensions
+ */
+async function prepareCatalogImageForWord(photoUrl) {
+  if (!photoUrl) return null;
+  const cleanPath = photoUrl.startsWith('/') ? photoUrl.slice(1) : photoUrl;
+  const localFile = path.resolve(projectRoot, cleanPath);
+
+  let rawBuffer = null;
+  if (fs.existsSync(localFile)) {
+    try {
+      rawBuffer = fs.readFileSync(localFile);
+    } catch (e) {
+      console.warn(`Could not read local file ${localFile}:`, e.message);
+    }
+  }
+
+  // Fallback to production URL if local file is missing
+  if (!rawBuffer) {
+    try {
+      const prodUrl = `https://uncle-jim.onrender.com/${cleanPath}`;
+      const res = await fetch(prodUrl);
+      if (res.ok) {
+        rawBuffer = Buffer.from(await res.arrayBuffer());
+      }
+    } catch (e) {
+      // Ignore network errors gracefully
+    }
+  }
+
+  if (!rawBuffer) return null;
+
+  try {
+    const pngBuffer = await sharp(rawBuffer)
+      .resize({ width: 300, height: 300, fit: 'inside', withoutEnlargement: true })
+      .png()
+      .toBuffer();
+    const meta = await sharp(pngBuffer).metadata();
+
+    let targetWidth = 125;
+    let targetHeight = 100;
+    if (meta.width && meta.height) {
+      const aspect = meta.width / meta.height;
+      targetWidth = 125;
+      targetHeight = Math.round(125 / aspect);
+      if (targetHeight > 150) {
+        targetHeight = 150;
+        targetWidth = Math.round(150 * aspect);
+      }
+    }
+
+    return { buffer: pngBuffer, width: targetWidth, height: targetHeight };
+  } catch (err) {
+    console.warn(`Error converting image for Word: ${cleanPath}`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Generate Maritime Museum Microsoft Word (.docx) Curatorial Catalog
+ */
+export async function generateMaritimeCatalogDocx({ estateId, dbAll }) {
+  const query = `
+    SELECT 
+      i.id, 
+      i.item_number, 
+      i.title, 
+      c.name as category,
+      i.dimensions,
+      i.description, 
+      i.museum_photo_url
+    FROM items i
+    LEFT JOIN categories c ON i.category_id = c.id
+    LEFT JOIN maritime_catalog_order mco ON mco.item_id = i.id
+    WHERE i.institutional_candidate = 'Maritime Museum'
+      ${estateId ? 'AND (i.estate_id = ? OR i.estate_id IS NULL)' : ''}
+    ORDER BY 
+      CASE WHEN mco.order_index IS NOT NULL THEN 0 ELSE 1 END ASC,
+      mco.order_index ASC,
+      CAST(SUBSTR(i.item_number, 4) AS INTEGER) ASC,
+      i.item_number ASC
+  `;
+
+  const items = await dbAll(query, estateId ? [estateId] : []);
+  const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const dateSlug = new Date().toISOString().slice(0, 10);
+  const filename = `uncle-jim-maritime-museum-catalog-${dateSlug}.docx`;
+
+  const itemBlocks = [];
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const imgData = await prepareCatalogImageForWord(item.museum_photo_url);
+
+    const itemNumStr = item.item_number ? String(item.item_number) : 'CATALOG ITEM';
+    const titleStr = item.title || 'Untitled Object';
+    const descStr = cleanForMuseumCatalog(item.description);
+
+    // Left column: Photo or placeholder
+    const leftCellParagraphs = [];
+    if (imgData) {
+      leftCellParagraphs.push(
+        new DocxParagraph({
+          alignment: DocxAlignmentType.CENTER,
+          children: [
+            new DocxImageRun({
+              data: imgData.buffer,
+              transformation: {
+                width: imgData.width,
+                height: imgData.height
+              }
+            })
+          ],
+          spacing: { before: 60, after: 60 }
+        })
+      );
+    } else {
+      leftCellParagraphs.push(
+        new DocxParagraph({
+          alignment: DocxAlignmentType.CENTER,
+          children: [
+            new DocxTextRun({
+              text: '[No Museum Photo]',
+              italics: true,
+              color: '9CA3AF',
+              size: 16 // 8pt
+            })
+          ],
+          spacing: { before: 180, after: 180 }
+        })
+      );
+    }
+
+    // Right column: Item Number, Title, Metadata, Description
+    const rightCellParagraphs = [
+      new DocxParagraph({
+        children: [
+          new DocxTextRun({
+            text: itemNumStr,
+            bold: true,
+            color: '1E3A8A', // Deep navy
+            size: 22 // 11pt
+          })
+        ],
+        spacing: { before: 40, after: 40 }
+      }),
+      new DocxParagraph({
+        children: [
+          new DocxTextRun({
+            text: titleStr,
+            bold: true,
+            color: '111827', // Charcoal
+            size: 22 // 11pt
+          })
+        ],
+        spacing: { before: 0, after: 80 }
+      })
+    ];
+
+    // Optional metadata row (Category, Dimensions) if present
+    const metaParts = [];
+    if (item.category && item.category !== 'Uncategorized') {
+      metaParts.push(`Category: ${item.category}`);
+    }
+    if (item.dimensions) {
+      metaParts.push(`Dimensions: ${item.dimensions}`);
+    }
+    if (metaParts.length > 0) {
+      rightCellParagraphs.push(
+        new DocxParagraph({
+          children: [
+            new DocxTextRun({
+              text: metaParts.join('   |   '),
+              color: '4B5563',
+              size: 18, // 9pt
+              italics: true
+            })
+          ],
+          spacing: { before: 0, after: 80 }
+        })
+      );
+    }
+
+    // Normalized curatorial description
+    rightCellParagraphs.push(
+      new DocxParagraph({
+        children: [
+          new DocxTextRun({
+            text: descStr,
+            color: '374151',
+            size: 19 // 9.5pt
+          })
+        ],
+        spacing: { line: 260, before: 0, after: 80 }
+      })
+    );
+
+    // 2-column table for side-by-side artifact layout
+    const itemTable = new DocxTable({
+      width: { size: 100, type: DocxWidthType.PERCENTAGE },
+      borders: {
+        top: { style: DocxBorderStyle.NONE },
+        left: { style: DocxBorderStyle.NONE },
+        right: { style: DocxBorderStyle.NONE },
+        bottom: { 
+          style: i < items.length - 1 ? DocxBorderStyle.SINGLE : DocxBorderStyle.NONE, 
+          size: 4, 
+          color: 'E5E7EB' 
+        },
+        insideHorizontal: { style: DocxBorderStyle.NONE },
+        insideVertical: { style: DocxBorderStyle.NONE }
+      },
+      rows: [
+        new DocxTableRow({
+          cantSplit: true, // Protected pagination: keep each artifact block intact
+          children: [
+            new DocxTableCell({
+              width: { size: 24, type: DocxWidthType.PERCENTAGE },
+              children: leftCellParagraphs,
+              margins: { top: 120, bottom: 120, left: 100, right: 140 }
+            }),
+            new DocxTableCell({
+              width: { size: 76, type: DocxWidthType.PERCENTAGE },
+              children: rightCellParagraphs,
+              margins: { top: 120, bottom: 120, left: 140, right: 100 }
+            })
+          ]
+        })
+      ]
+    });
+
+    itemBlocks.push(itemTable);
+    if (i < items.length - 1) {
+      itemBlocks.push(new DocxParagraph({ spacing: { before: 80, after: 80 } }));
+    }
+  }
+
+  // Construct Document
+  const doc = new DocxDocument({
+    creator: 'Uncle Jim Estate Curatorial System',
+    title: 'Uncle Jim Estate — Maritime Museum Curatorial Catalog',
+    description: 'Formal publication catalog of maritime artifacts for curator presentation and accession review.',
+    styles: {
+      default: {
+        document: {
+          run: {
+            font: 'Arial',
+            size: 20
+          }
+        }
+      }
+    },
+    sections: [
+      {
+        properties: {
+          page: {
+            margin: {
+              top: 1080,    // 0.75 inch
+              bottom: 1080,
+              left: 1080,
+              right: 1080
+            }
+          }
+        },
+        headers: {
+          default: new DocxHeader({
+            children: [
+              new DocxParagraph({
+                alignment: DocxAlignmentType.RIGHT,
+                children: [
+                  new DocxTextRun({
+                    text: 'Uncle Jim Estate — Maritime Museum Collection',
+                    italics: true,
+                    color: '9CA3AF',
+                    size: 16 // 8pt
+                  })
+                ]
+              })
+            ]
+          })
+        },
+        footers: {
+          default: new DocxFooter({
+            children: [
+              new DocxParagraph({
+                alignment: DocxAlignmentType.CENTER,
+                children: [
+                  new DocxTextRun({
+                    text: 'Uncle Jim Estate  •  Maritime Museum Collection  •  Page ',
+                    color: '9CA3AF',
+                    size: 16
+                  }),
+                  new DocxTextRun({
+                    children: [DocxPageNumber.CURRENT],
+                    color: '9CA3AF',
+                    size: 16
+                  }),
+                  new DocxTextRun({
+                    text: ' of ',
+                    color: '9CA3AF',
+                    size: 16
+                  }),
+                  new DocxTextRun({
+                    children: [DocxPageNumber.TOTAL_PAGES],
+                    color: '9CA3AF',
+                    size: 16
+                  })
+                ]
+              })
+            ]
+          })
+        },
+        children: [
+          // Title
+          new DocxParagraph({
+            alignment: DocxAlignmentType.CENTER,
+            children: [
+              new DocxTextRun({
+                text: 'UNCLE JIM ESTATE',
+                bold: true,
+                color: '1A2B49',
+                size: 38 // 19pt
+              })
+            ],
+            spacing: { before: 100, after: 60 }
+          }),
+          // Subtitle
+          new DocxParagraph({
+            alignment: DocxAlignmentType.CENTER,
+            children: [
+              new DocxTextRun({
+                text: 'MARITIME MUSEUM COLLECTION',
+                bold: true,
+                color: '374151',
+                size: 24 // 12pt
+              })
+            ],
+            spacing: { before: 0, after: 80 }
+          }),
+          // Curatorial Metadata
+          new DocxParagraph({
+            alignment: DocxAlignmentType.CENTER,
+            children: [
+              new DocxTextRun({
+                text: `Curatorial Catalog  •  Generated ${dateStr}  •  ${items.length} Cataloged Objects`,
+                color: '6B7280',
+                size: 19 // 9.5pt
+              })
+            ],
+            spacing: { before: 0, after: 200 }
+          }),
+          // Decorative border line
+          new DocxTable({
+            width: { size: 100, type: DocxWidthType.PERCENTAGE },
+            borders: {
+              top: { style: DocxBorderStyle.SINGLE, size: 6, color: 'D1D5DB' },
+              bottom: { style: DocxBorderStyle.NONE },
+              left: { style: DocxBorderStyle.NONE },
+              right: { style: DocxBorderStyle.NONE },
+              insideHorizontal: { style: DocxBorderStyle.NONE },
+              insideVertical: { style: DocxBorderStyle.NONE }
+            },
+            rows: [
+              new DocxTableRow({
+                children: [
+                  new DocxTableCell({
+                    children: [new DocxParagraph({ spacing: { before: 40, after: 120 } })]
+                  })
+                ]
+              })
+            ]
+          }),
+          // Artifact list
+          ...itemBlocks
+        ]
+      }
+    ]
+  });
+
+  const buffer = await DocxPacker.toBuffer(doc);
+  return { buffer, filename };
+}
+
+/**
+ * Stream Maritime Museum Microsoft Word (.docx) Catalog
+ */
+export async function streamMaritimeCatalogDocx(res, { estateId, dbAll }) {
+  const { buffer, filename } = await generateMaritimeCatalogDocx({ estateId, dbAll });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buffer);
 }
 
 /**

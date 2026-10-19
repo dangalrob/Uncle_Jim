@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   ArrowLeft, 
   Download, 
+  FileText,
   CheckCircle2, 
   AlertCircle, 
   Loader2, 
@@ -196,20 +197,20 @@ export default function MaritimeMuseumReportView({ currentUser, onClose }) {
     draggedItemRef.current = null;
   };
 
-  const handleDownloadPdf = async () => {
+  const handleDownloadDocx = async () => {
     setIsGenerating(true);
     setError('');
     setSuccessMessage('');
 
     try {
-      const res = await fetch('/api/admin/reports/maritime-pdf', {
+      const res = await fetch('/api/admin/reports/maritime-docx', {
         credentials: 'include'
       });
 
-      if (!res.ok) throw new Error(`PDF generation failed (${res.status})`);
+      if (!res.ok) throw new Error(`Word document generation failed (${res.status})`);
 
       const dateSlug = new Date().toISOString().slice(0, 10);
-      let filename = `uncle-jim-maritime-museum-catalog-${dateSlug}.pdf`;
+      let filename = `uncle-jim-maritime-museum-catalog-${dateSlug}.docx`;
       const disposition = res.headers.get('Content-Disposition');
       if (disposition && disposition.includes('filename=')) {
         const match = disposition.match(/filename="?([^"]+)"?/);
@@ -226,7 +227,7 @@ export default function MaritimeMuseumReportView({ currentUser, onClose }) {
       a.remove();
       window.URL.revokeObjectURL(downloadUrl);
 
-      setSuccessMessage(`Maritime Museum Catalog "${filename}" generated and downloaded successfully!`);
+      setSuccessMessage(`Maritime Museum Catalog "${filename}" generated and downloaded successfully as a Microsoft Word document (.docx)!`);
     } catch (err) {
       console.error(err);
       setError(err.message);
@@ -254,7 +255,7 @@ export default function MaritimeMuseumReportView({ currentUser, onClose }) {
               ⚓ Maritime Museum Curatorial Catalog
             </h1>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>
-              Generate a formal museum-ready publication catalog of maritime artifacts for curator presentation and accession review.
+              Generate a formal museum-ready publication catalog of maritime artifacts in Microsoft Word format (.docx) for curator presentation, editing, and accession review.
             </p>
           </div>
           <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -280,7 +281,7 @@ export default function MaritimeMuseumReportView({ currentUser, onClose }) {
             )}
             <button 
               className="btn-green"
-              onClick={handleDownloadPdf}
+              onClick={handleDownloadDocx}
               disabled={isGenerating || isReordering}
               style={{ 
                 display: 'inline-flex', 
@@ -292,8 +293,8 @@ export default function MaritimeMuseumReportView({ currentUser, onClose }) {
                 boxShadow: '0 2px 8px rgba(16,185,129,0.3)'
               }}
             >
-              {isGenerating ? <Loader2 size={20} className="spin" /> : <Download size={20} />}
-              {isGenerating ? 'Generating Catalog...' : 'GENERATE MARITIME MUSEUM PDF'}
+              {isGenerating ? <Loader2 size={20} className="spin" /> : <FileText size={20} />}
+              {isGenerating ? 'Generating Word Document...' : 'GENERATE MARITIME MUSEUM WORD DOCUMENT (.DOCX)'}
             </button>
           </div>
         </div>
@@ -402,8 +403,8 @@ export default function MaritimeMuseumReportView({ currentUser, onClose }) {
               <div>Strictly uses normalized artifact descriptions. Excludes AI valuation, pricing estimates, and sales commentary.</div>
             </div>
             <div style={{ background: '#fff', padding: '0.85rem', borderRadius: '6px', border: '1px solid #e5e7eb' }}>
-              <div style={{ fontWeight: 600, color: 'var(--pine-deep)', marginBottom: '0.25rem' }}>📄 Protected Pagination</div>
-              <div>Dynamic height calculation ensures individual artifact photos and text blocks never split awkwardly across page breaks.</div>
+              <div style={{ fontWeight: 600, color: 'var(--pine-deep)', marginBottom: '0.25rem' }}>📄 Editable Word Format (.docx)</div>
+              <div>Fully editable in Microsoft Word. Features native text, embedded museum photos, and page-break-protected layout tables.</div>
             </div>
           </div>
         </div>
@@ -627,7 +628,7 @@ export default function MaritimeMuseumReportView({ currentUser, onClose }) {
           ) : (
             <button 
               className="btn-green"
-              onClick={handleDownloadPdf}
+              onClick={handleDownloadDocx}
               disabled={isGenerating}
               style={{ 
                 display: 'inline-flex', 
@@ -638,8 +639,8 @@ export default function MaritimeMuseumReportView({ currentUser, onClose }) {
                 fontWeight: 700
               }}
             >
-              {isGenerating ? <Loader2 size={20} className="spin" /> : <Download size={20} />}
-              {isGenerating ? 'Generating Catalog...' : 'GENERATE MARITIME MUSEUM PDF'}
+              {isGenerating ? <Loader2 size={20} className="spin" /> : <FileText size={20} />}
+              {isGenerating ? 'Generating Word Document...' : 'GENERATE MARITIME MUSEUM WORD DOCUMENT (.DOCX)'}
             </button>
           )}
         </div>
